@@ -24,6 +24,7 @@ import org.bukkit.block.*;
 import org.bukkit.entity.Player;
 import org.bukkit.event.inventory.*;
 import org.bukkit.event.block.Action;
+import org.bukkit.event.block.BlockDamageAbortEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.*;
 import org.bukkit.inventory.meta.BundleMeta;
@@ -128,6 +129,7 @@ class DrawerChestInventoryTest {
             doAnswer(call -> { nextTick.add(call.getArgument(1)); return null; })
                     .when(execution).runOnEntity(eq(player), any(), any());
             when(context.settings()).thenReturn(settings);
+            when(settings.interaction()).thenReturn(new DrawerSettings.Interaction(10, false));
             when(settings.storageMenu()).thenReturn(new DrawerSettings.StorageMenu(4));
             when(context.logger()).thenReturn(Logger.getLogger("drawer-chest-test"));
             when(context.messages()).thenReturn(new DrawerMessages(Map.of(
@@ -212,9 +214,9 @@ class DrawerChestInventoryTest {
             verify(event, never()).setCancelled(true);
         }
     }
-    @Test void rightClickWithAnItemOpensTheChestWithoutConsumingTheHeldStack() {
+    @Test void disabledShortcutWithdrawalsStillAllowTheStorageGuiToOpen() {
         try (Fixture f = new Fixture(1000, 64, 10000)) {
-            when(f.settings.interaction()).thenReturn(new DrawerSettings.Interaction(10, false));
+            when(f.settings.interaction()).thenReturn(new DrawerSettings.Interaction(false, 10, false));
             final ItemStack held = f.item("stone", 64, 64);
             when(f.bottom.getItemInMainHand()).thenReturn(held);
             doAnswer(call -> {
@@ -233,6 +235,58 @@ class DrawerChestInventoryTest {
             assertEquals(64, held.getAmount());
             assertEquals(1000, f.total());
             verify(f.repository, never()).save(any(), any());
+        }
+    }
+
+    @Test void disabledShortcutWithdrawalsDoNotArmAReleasedLeftClick() {
+        try (Fixture f = new Fixture(1000, 64, 10000)) {
+            when(f.settings.interaction()).thenReturn(new DrawerSettings.Interaction(false, 10, false));
+            final var withdrawals = mock(DrawerWithdrawalCoordinator.class);
+            final var listener = new DrawerInteractionListener(f.context, f.hoppers, withdrawals,
+                    DrawerRuntime.DrawerDisplayTargetResolver.none(), f.protection);
+            final PlayerInteractEvent event = mock(PlayerInteractEvent.class);
+            when(event.getPlayer()).thenReturn(f.player);
+            when(event.getAction()).thenReturn(Action.LEFT_CLICK_BLOCK);
+            when(event.getClickedBlock()).thenReturn(f.block);
+            when(event.getHand()).thenReturn(EquipmentSlot.HAND);
+
+            listener.onPlayerInteract(event);
+            final BlockDamageAbortEvent released = mock(BlockDamageAbortEvent.class);
+            when(released.getPlayer()).thenReturn(f.player);
+            when(released.getBlock()).thenReturn(f.block);
+            listener.onBlockDamageAbort(released);
+
+            verify(event, never()).setCancelled(true);
+            verify(f.player, never()).openInventory(any(Inventory.class));
+            verify(f.repository, never()).save(any(), any());
+            verifyNoInteractions(withdrawals);
+        }
+    }
+
+    @Test void enabledShortcutWithdrawalsStillBeginTheReleasedLeftClickTransfer() {
+        try (Fixture f = new Fixture(1000, 64, 10000)) {
+            when(f.settings.interaction()).thenReturn(new DrawerSettings.Interaction(true, 10, false));
+            when(f.block.getWorld()).thenReturn(f.world);
+            when(f.block.getX()).thenReturn(0);
+            when(f.block.getY()).thenReturn(64);
+            when(f.block.getZ()).thenReturn(0);
+            final var withdrawals = mock(DrawerWithdrawalCoordinator.class);
+            final var listener = new DrawerInteractionListener(f.context, f.hoppers, withdrawals,
+                    DrawerRuntime.DrawerDisplayTargetResolver.none(), f.protection);
+            final PlayerInteractEvent event = mock(PlayerInteractEvent.class);
+            when(event.getPlayer()).thenReturn(f.player);
+            when(event.getAction()).thenReturn(Action.LEFT_CLICK_BLOCK);
+            when(event.getClickedBlock()).thenReturn(f.block);
+            when(event.getHand()).thenReturn(EquipmentSlot.HAND);
+            listener.onPlayerInteract(event);
+
+            final BlockDamageAbortEvent released = mock(BlockDamageAbortEvent.class);
+            when(released.getPlayer()).thenReturn(f.player);
+            when(released.getBlock()).thenReturn(f.block);
+            listener.onBlockDamageAbort(released);
+
+            verify(withdrawals).begin(eq(f.player), eq(f.barrel),
+                    argThat(transaction -> transaction.accepted() && transaction.acceptedAmount() == 1L));
         }
     }
     @Test void nativePickupAndSplittingDebitOnlyTheItemsActuallyRemoved() {

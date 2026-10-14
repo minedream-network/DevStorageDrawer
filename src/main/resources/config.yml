@@ -36,6 +36,11 @@ storage-menu:
       material: BLACK_STAINED_GLASS_PANE
 
 interaction:
+  # Controls quick withdrawals outside the storage GUI: left-click takes one item,
+  # Shift+left-click takes one stack, and attacking the drawer display does the same.
+  # The storage GUI, Shift+right-click deposits, upgrades, selling, breaking, and
+  # Hopper/Automation are unaffected.
+  shortcut-withdrawals-enabled: false
   # A second matching right-click within this window deposits matching inventory stacks.
   bulk-deposit-window-ticks: 10
   # false allows opening, deposits, withdrawals, and sell tools from any face.

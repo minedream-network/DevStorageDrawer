@@ -112,11 +112,20 @@ public record DrawerSettings(
         }
     }
 
-    public record Interaction(int bulkDepositWindowTicks, boolean requireFacingFace) {
+    public record Interaction(
+            boolean shortcutWithdrawalsEnabled,
+            int bulkDepositWindowTicks,
+            boolean requireFacingFace
+    ) {
         public Interaction {
             if (bulkDepositWindowTicks < 1) {
                 throw new IllegalArgumentException("bulkDepositWindowTicks must be positive");
             }
+        }
+
+        /** Source-compatible default for callers compiled before the shortcut switch existed. */
+        public Interaction(final int bulkDepositWindowTicks, final boolean requireFacingFace) {
+            this(true, bulkDepositWindowTicks, requireFacingFace);
         }
     }
 

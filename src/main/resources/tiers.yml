@@ -10,6 +10,7 @@ tiers:
       lore:
         - "<gray>Stores up to <white>32 stacks<gray> of one item."
       custom-model-data: null
+      enchantment-glint: true
     capacity-stacks: 32
     placement-permission: ""
     upgrade:
@@ -23,6 +24,7 @@ tiers:
       lore:
         - "<gray>Stores up to <white>64 stacks<gray> of one item."
       custom-model-data: null
+      enchantment-glint: true
     capacity-stacks: 64
     placement-permission: ""
     upgrade:
@@ -36,5 +38,6 @@ tiers:
       lore:
         - "<gray>Stores up to <white>128 stacks<gray> of one item."
       custom-model-data: null
+      enchantment-glint: true
     capacity-stacks: 128
     placement-permission: ""

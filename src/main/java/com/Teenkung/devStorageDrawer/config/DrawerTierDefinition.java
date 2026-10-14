@@ -18,7 +18,8 @@ public record DrawerTierDefinition(
         Component itemName,
         List<Component> itemLore,
         Integer customModelData,
-        DrawerUpgradePath upgradePath
+        DrawerUpgradePath upgradePath,
+        boolean enchantmentGlint
 ) {
     public DrawerTierDefinition {
         Objects.requireNonNull(tier, "tier");
@@ -34,7 +35,13 @@ public record DrawerTierDefinition(
 
     public DrawerTierDefinition(final DrawerTier tier, final Component itemName,
             final List<Component> itemLore, final Integer customModelData) {
-        this(tier, itemName, itemLore, customModelData, null);
+        this(tier, itemName, itemLore, customModelData, null, true);
+    }
+
+    public DrawerTierDefinition(final DrawerTier tier, final Component itemName,
+            final List<Component> itemLore, final Integer customModelData,
+            final DrawerUpgradePath upgradePath) {
+        this(tier, itemName, itemLore, customModelData, upgradePath, true);
     }
 
     public java.util.Optional<DrawerUpgradePath> optionalUpgradePath() {
@@ -46,6 +53,7 @@ public record DrawerTierDefinition(
         final ItemMeta meta = item.getItemMeta();
         meta.displayName(itemName);
         meta.lore(itemLore);
+        meta.setEnchantmentGlintOverride(enchantmentGlint);
         if (customModelData != null) {
             final CustomModelDataComponent modelData = meta.getCustomModelDataComponent();
             modelData.setFloats(List.of(customModelData.floatValue()));

@@ -14,6 +14,9 @@ Builds use the included Gradle wrapper and target the Paper API as a compile-onl
 ## Features
 
 - Configurable drawer tiers and capacity based on the stored item's native stack size
+- Drawer items use a configurable enchantment glint without adding a real enchantment
+- Global `interaction.shortcut-withdrawals-enabled` switch for disabling quick item
+  extraction outside the GUI while retaining the full storage and upgrade menus
 - Single-item storage with deposits, withdrawals, shift interactions, and inventory-aware transfers
 - Paged large-chest storage: right-click any face of the drawer to browse all logical stock, with 45 item slots and a navigation row. Cursor pickup, splitting, shift transfers, drag, hotbar/offhand swaps, double-click collection and slot drops transfer real items; sneak-right-click keeps the quick-deposit shortcut
 - The menu shows all logical stock while the barrel mirror serves hoppers. It accepts one item identity per drawer, respects logical capacity, and blocks transfers while a recovery/sale/break journal is pending
@@ -110,6 +113,12 @@ Drawers can be used from any face by default. For an existing installation, set
 `interaction.require-facing-face: false` in its `config.yml` and run `/drawers reload`.
 Set it to `true` to restrict interactions to the front face again.
 
+Shortcut withdrawal is disabled by default. `interaction.shortcut-withdrawals-enabled: false`
+blocks left-click one-item withdrawal, Shift+left-click stack withdrawal, and attacking a
+drawer display. Right-click storage GUI access, GUI deposits/withdrawals, Shift+right-click
+quick deposits, paid upgrades, sell tools, breaking, and Hopper/Automation remain available.
+Set it to `true` and run `/drawers reload` to restore the outside-GUI withdrawal shortcuts.
+
 ### Floodgate holograms
 
 Players identified by `FloodgateApi.isFloodgatePlayer(UUID)` see two invisible
@@ -147,6 +156,11 @@ The renderer does not infer Bedrock identity from usernames, UUID patterns, or a
 Geyser connection alone.
 
 Existing drawers retain their capacity snapshot. Use the explicit migration command when a configured tier's capacity must be changed safely.
+
+Each tier item has `item.enchantment-glint: true` by default. This applies the native
+visual glint to drawer items created by `/drawers give`, the public API, and drawer
+break drops without adding enchantments or enchantment lore. Set it to `false` under
+a tier and run `/drawers reload` to disable the glint for newly created items.
 
 ### Custom menu icons
 

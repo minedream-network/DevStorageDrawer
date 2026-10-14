@@ -98,6 +98,10 @@ public final class DrawerInteractionListener implements Listener {
         if (event.getAction() == Action.LEFT_CLICK_BLOCK) {
             // Do not cancel the attack. Releasing it produces BlockDamageAbortEvent and withdraws;
             // completing it produces BlockBreakEvent and discards the pending withdrawal.
+            if (!shortcutWithdrawalsEnabled()) {
+                this.pendingBlockWithdrawals.remove(event.getPlayer().getUniqueId());
+                return;
+            }
             if (!canUse(event.getPlayer())) {
                 return;
             }
@@ -158,6 +162,10 @@ public final class DrawerInteractionListener implements Listener {
             return;
         }
         event.setCancelled(true);
+        if (!shortcutWithdrawalsEnabled()) {
+            this.pendingBlockWithdrawals.remove(player.getUniqueId());
+            return;
+        }
         if (!canUse(player)) {
             message(player, "general.no-permission");
             return;
@@ -174,6 +182,9 @@ public final class DrawerInteractionListener implements Listener {
         final Player player = event.getPlayer();
         final PendingBlockWithdrawal pending = this.pendingBlockWithdrawals.remove(player.getUniqueId());
         if (pending == null || !pending.matches(event.getBlock()) || pending.expired()) {
+            return;
+        }
+        if (!shortcutWithdrawalsEnabled()) {
             return;
         }
         final Barrel barrel = this.context.blocks().barrel(event.getBlock()).orElse(null);
@@ -481,6 +492,10 @@ public final class DrawerInteractionListener implements Listener {
 
     private boolean canUse(final Player player) {
         return player.hasPermission("devstoragedrawer.use");
+    }
+
+    private boolean shortcutWithdrawalsEnabled() {
+        return this.context.settings().interaction().shortcutWithdrawalsEnabled();
     }
 
     private boolean canWithdrawWith(final Barrel barrel, final ItemStack held) {

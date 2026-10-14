@@ -54,10 +54,7 @@ public final class DrawerConfigurationService {
 
         this.settings = new DrawerSettings(
                 parseTiers(tiers, configuration),
-                new DrawerSettings.Interaction(
-                        positiveInt(configuration, "interaction.bulk-deposit-window-ticks"),
-                        configuration.getBoolean("interaction.require-facing-face", false)
-                ),
+                parseInteraction(configuration),
                 new DrawerSettings.Visuals(
                         configuration.getBoolean("visuals.enabled", true),
                         configuration.getBoolean("visuals.repair-on-chunk-load", true),
@@ -117,6 +114,14 @@ public final class DrawerConfigurationService {
 
     public DrawerSettings settings() {
         return requireLoaded(settings, "settings");
+    }
+
+    static DrawerSettings.Interaction parseInteraction(final ConfigurationSection configuration) {
+        return new DrawerSettings.Interaction(
+                configuration.getBoolean("interaction.shortcut-withdrawals-enabled", false),
+                positiveInt(configuration, "interaction.bulk-deposit-window-ticks"),
+                configuration.getBoolean("interaction.require-facing-face", false)
+        );
     }
 
     static DrawerSettings.StorageMenu parseStorageMenu(final ConfigurationSection configuration) {
@@ -301,7 +306,8 @@ public final class DrawerConfigurationService {
                     upgrade.getString("permission", "")
             );
             definitions.put(id, new DrawerTierDefinition(
-                    drawerTier, miniMessage.deserialize(name), lore, customModelData, upgradePath
+                    drawerTier, miniMessage.deserialize(name), lore, customModelData, upgradePath,
+                    item.getBoolean("enchantment-glint", true)
             ));
         }
         for (final DrawerTierDefinition definition : definitions.values()) {
