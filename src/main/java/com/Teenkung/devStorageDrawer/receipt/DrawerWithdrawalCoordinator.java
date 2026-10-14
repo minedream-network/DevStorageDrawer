@@ -152,7 +152,11 @@ public final class DrawerWithdrawalCoordinator implements Listener {
 
         final WithdrawalReceipt receipt = store.find(journal.operationId()).orElse(null);
         if (receipt == null) {
-            restoreMissingAppliedReceipt(barrel, state, journal, resume);
+            // An older chunk save may retain APPLIED after the player received the items.
+            // Missing delivery evidence cannot prove that issuing a replacement is safe.
+            context.logger().severe("Quarantined withdrawal " + journal.operationId()
+                    + " at " + barrel.getLocation() + " because its durable receipt is missing;"
+                    + " delivery must be verified before manual recovery");
             return;
         }
         if (!receipt.ownerId().equals(journal.ownerId())) {
@@ -161,61 +165,6 @@ public final class DrawerWithdrawalCoordinator implements Listener {
             return;
         }
         persistCommit(barrel.getLocation(), journal, resume);
-    }
-
-    /**
-     * Repairs receipts lost by the older rapid-click recovery path: an APPLIED journal proves the item
-     * was removed, while the still-present journal proves the normal idempotent delivery never
-     * completed. PREPARED journals intentionally continue through rollback instead.
-     */
-    private void restoreMissingAppliedReceipt(
-            final Barrel barrel,
-            final DrawerState state,
-            final DrawerProxyJournal journal,
-            final Runnable resume
-    ) {
-        if (journal.phase() != DrawerJournalPhase.APPLIED || !state.hasTemplate()) {
-            context.logger().severe("Quarantined withdrawal " + journal.operationId()
-                    + " because its required durable receipt is missing");
-            return;
-        }
-        final long count;
-        try {
-            count = Math.subtractExact(journal.totalBefore(), journal.totalAfter());
-        } catch (final ArithmeticException exception) {
-            context.logger().severe("Quarantined withdrawal " + journal.operationId()
-                    + " because its missing receipt count is invalid");
-            return;
-        }
-        if (count <= 0L || !inFlightOperations.add(journal.operationId())) {
-            return;
-        }
-
-        final Location location = barrel.getLocation();
-        final WithdrawalReceipt replacement = new WithdrawalReceipt(
-                journal.operationId(),
-                journal.ownerId(),
-                barrel.getWorld().getUID(),
-                barrel.getX(),
-                barrel.getY(),
-                barrel.getZ(),
-                state.requireTemplate().serializeAsBytes(),
-                count,
-                WithdrawalReceiptStatus.PREPARED,
-                journal.createdAtEpochMillis()
-        );
-        context.logger().warning("Recreating missing receipt for applied withdrawal " + journal.operationId()
-                + " at " + location);
-        context.execution().runAsync(task -> {
-            try {
-                store.prepare(replacement);
-                persistCommit(location, journal, resume);
-            } catch (final IOException exception) {
-                finishOperation(journal.operationId());
-                context.logger().severe("Could not recreate missing withdrawal receipt "
-                        + journal.operationId() + ": " + exception.getMessage());
-            }
-        });
     }
 
     @EventHandler
@@ -474,7 +423,7 @@ public final class DrawerWithdrawalCoordinator implements Listener {
         final long delivered = deliveredCount;
         context.execution().runAsync(task -> {
             try {
-                store.removeAll(acknowledgements);
+                store.completeAll(acknowledgements);
                 context.execution().runOnEntity(player, ignored -> {
                     final Set<UUID> remainingClaims = parseClaimed(
                             player.getPersistentDataContainer().get(CLAIMED_RECEIPTS, PersistentDataType.STRING)

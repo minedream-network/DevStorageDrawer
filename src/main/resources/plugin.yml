@@ -6,7 +6,7 @@ load: POSTWORLD
 folia-supported: true
 authors: [Teenkung123]
 description: Configurable single-item storage drawers built from vanilla barrels.
-softdepend: [Geyser-Spigot, floodgate, WorldGuard]
+softdepend: [Vault, minedream-core-smp, Geyser-Spigot, floodgate, WorldGuard, ItemsAdder, Oraxen, Nexo, MMOItems, MythicMobs, HeadDatabase, ItemBridge, ItemEdit, ExecutableItems, Nova, Slimefun, CustomFishing, CraftEngine, eco]
 
 commands:
   drawers:
@@ -17,6 +17,9 @@ commands:
 permissions:
   devstoragedrawer.use:
     description: Use placed storage drawers.
+    default: true
+  devstoragedrawer.upgrade:
+    description: Purchase configured upgrades for placed storage drawers.
     default: true
   devstoragedrawer.admin:
     description: Grants every DevStorageDrawer administration permission.

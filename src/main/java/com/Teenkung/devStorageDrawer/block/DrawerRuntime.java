@@ -17,6 +17,7 @@ import com.teenkung.devstoragedrawer.redstone.DrawerComparatorService;
 import com.teenkung.devstoragedrawer.receipt.DrawerWithdrawalCoordinator;
 import com.teenkung.devstoragedrawer.receipt.WithdrawalReceiptStore;
 import com.teenkung.devstoragedrawer.scheduler.FoliaExecution;
+import com.teenkung.devstoragedrawer.upgrade.DrawerUpgradeService;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -44,7 +45,9 @@ public final class DrawerRuntime {
     private final DrawerComparatorService comparatorService;
     private final DrawerWithdrawalCoordinator withdrawalCoordinator;
     private final DrawerSellWandBridge sellWandBridge;
+    private final DrawerSaleService saleService;
     private final DrawerApiService api;
+    private final DrawerUpgradeService upgradeService;
 
     public DrawerRuntime(
             final JavaPlugin plugin,
@@ -124,6 +127,8 @@ public final class DrawerRuntime {
         this.hopperBridge = new DrawerHopperBridge(this.context, this.withdrawalCoordinator);
         this.withdrawalCoordinator.setRebalanceRequester(this.hopperBridge::queueRebalance);
         this.sellWandBridge = new DrawerSellWandBridge(this.context, this.hopperBridge);
+        this.saleService = new DrawerSaleService(this.context, this.sellWandBridge, withdrawalProtection);
+        this.upgradeService = new DrawerUpgradeService(this.context, this.hopperBridge, withdrawalProtection);
         this.api = new DrawerApiService(this.context, this.hopperBridge, this.sellWandBridge);
         this.context.setMutationObserver(mutation -> {
             this.comparatorService.onDrawerChanged(mutation);
@@ -134,7 +139,8 @@ public final class DrawerRuntime {
                 this.hopperBridge,
                 this.withdrawalCoordinator,
                 displayTargetResolver,
-                withdrawalProtection
+                withdrawalProtection,
+                this.upgradeService::open
         );
         this.blockListener = new DrawerBlockListener(this.context, this.hopperBridge);
     }
@@ -146,7 +152,8 @@ public final class DrawerRuntime {
                 this.interactionListener,
                 this.hopperBridge,
                 this.comparatorService,
-                this.withdrawalCoordinator
+                this.withdrawalCoordinator,
+                this.upgradeService
         );
     }
 
@@ -163,6 +170,10 @@ public final class DrawerRuntime {
         return this.sellWandBridge;
     }
 
+    public com.teenkung.devstoragedrawer.api.DrawerSaleApi saleApi() {
+        return this.saleService;
+    }
+
     /** Stable public integration contract. Internal runtime types remain private implementation details. */
     public DevStorageDrawerApi api() {
         return this.api;
@@ -170,6 +181,10 @@ public final class DrawerRuntime {
 
     /** Stops this runtime before the plugin scheduler is torn down. */
     public void disable() {
+        this.interactionListener.disable();
+        this.upgradeService.stop();
+        this.blockListener.disable();
+        this.saleService.disable();
         this.hopperBridge.shutdown();
         this.api.disable();
     }
@@ -277,13 +292,13 @@ public final class DrawerRuntime {
         }
     }
 
-    /** Creates one owner-bound parcel rather than a large item-entity flood when a drawer breaks. */
+    /** Prepares one owner-bound parcel before the barrel is removed. */
     @FunctionalInterface
     public interface DrawerParcelBreakHandler {
-        void dropContents(Player owner, Location location, ItemStack template, long totalCount);
+        ItemStack prepareContents(Player owner, ItemStack template, long totalCount);
 
         static DrawerParcelBreakHandler none() {
-            return (owner, location, template, totalCount) -> { };
+            return (owner, template, totalCount) -> null;
         }
     }
 

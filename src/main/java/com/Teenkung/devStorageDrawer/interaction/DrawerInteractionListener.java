@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import net.kyori.adventure.text.Component;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Barrel;
@@ -34,6 +34,9 @@ import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockDamageAbortEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.inventory.InventoryOpenEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerInteractAtEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
@@ -41,7 +44,7 @@ import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
 
-/** Player-facing single-item drawer interaction; no barrel GUI is ever opened for tagged barrels. */
+/** Player-facing single-item drawer interaction and ordinary container controls over real stock. */
 public final class DrawerInteractionListener implements Listener {
 
     private final DrawerRuntimeContext context;
@@ -49,6 +52,7 @@ public final class DrawerInteractionListener implements Listener {
     private final DrawerWithdrawalCoordinator withdrawals;
     private final DrawerRuntime.DrawerDisplayTargetResolver displayTargetResolver;
     private final DrawerWithdrawalProtection withdrawalProtection;
+    private final DrawerChestInventory chestInventory;
     private final Map<UUID, BulkDepositArm> bulkDepositArms = new ConcurrentHashMap<>();
     private final Map<UUID, PendingBlockWithdrawal> pendingBlockWithdrawals = new ConcurrentHashMap<>();
 
@@ -59,11 +63,23 @@ public final class DrawerInteractionListener implements Listener {
             final DrawerRuntime.DrawerDisplayTargetResolver displayTargetResolver,
             final DrawerWithdrawalProtection withdrawalProtection
     ) {
+        this(context, hoppers, withdrawals, displayTargetResolver, withdrawalProtection, (player, barrel) -> { });
+    }
+
+    public DrawerInteractionListener(
+            final DrawerRuntimeContext context,
+            final DrawerHopperBridge hoppers,
+            final DrawerWithdrawalCoordinator withdrawals,
+            final DrawerRuntime.DrawerDisplayTargetResolver displayTargetResolver,
+            final DrawerWithdrawalProtection withdrawalProtection,
+            final DrawerUpgradeOpener upgradeOpener
+    ) {
         this.context = Objects.requireNonNull(context, "context");
         this.hoppers = Objects.requireNonNull(hoppers, "hoppers");
         this.withdrawals = Objects.requireNonNull(withdrawals, "withdrawals");
         this.displayTargetResolver = Objects.requireNonNull(displayTargetResolver, "displayTargetResolver");
         this.withdrawalProtection = Objects.requireNonNull(withdrawalProtection, "withdrawalProtection");
+        this.chestInventory = new DrawerChestInventory(context, hoppers, withdrawalProtection, upgradeOpener);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -180,19 +196,40 @@ public final class DrawerInteractionListener implements Listener {
         final UUID playerId = event.getPlayer().getUniqueId();
         this.pendingBlockWithdrawals.remove(playerId);
         this.bulkDepositArms.remove(playerId);
+        this.chestInventory.quit(playerId);
     }
 
-    /** Covers plugin-driven opens as well as normal clicks; drawers never expose a player GUI. */
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onInventoryOpen(final InventoryOpenEvent event) {
-        if (!(event.getPlayer() instanceof Player player)
-                || !(event.getInventory().getHolder(false) instanceof Barrel barrel)
-                || !this.context.repository().isDrawer(barrel)) {
-            return;
-        }
-        event.setCancelled(true);
-        message(player, "drawer.no-gui");
+        this.chestInventory.opening(event);
     }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onMenuClick(final InventoryClickEvent event) {
+        this.chestInventory.click(event);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onMenuDrag(final InventoryDragEvent event) {
+        this.chestInventory.drag(event);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onMenuClickObserved(final InventoryClickEvent event) {
+        this.chestInventory.observed(event);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onMenuDragObserved(final InventoryDragEvent event) {
+        this.chestInventory.observed(event);
+    }
+
+    @EventHandler
+    public void onMenuClose(final InventoryCloseEvent event) {
+        this.chestInventory.close(event);
+    }
+
+    public void disable() { this.chestInventory.disable(); }
 
     private void rightClick(final Player player, final Barrel barrel, final EquipmentSlot hand) {
         final ItemStack held = heldItem(player, hand);
@@ -206,14 +243,19 @@ public final class DrawerInteractionListener implements Listener {
         final Barrel readyBarrel = ready.barrel();
         DrawerState state = ready.state();
         final DrawerBlockAccess.PhysicalStock stock = ready.stock();
+        if (!player.isSneaking()) {
+            this.context.execution().runOnEntity(player, task -> openMenu(player, ready), () -> { });
+            return;
+        }
         try {
-            if (isBulkDepositArmed(player, readyBarrel, state, held)) {
+            if (isBulkDepositArmed(player, readyBarrel, state, held) && isUsableItem(held)) {
                 depositMatchingInventory(player, readyBarrel, state, stock.count(), true);
                 this.bulkDepositArms.remove(player.getUniqueId());
                 return;
             }
             if (!state.hasTemplate()) {
                 if (!isUsableItem(held)) {
+                    message(player, "drawer.empty");
                     return;
                 }
                 depositHeld(player, readyBarrel, state, stock.count(), hand, held);
@@ -225,7 +267,7 @@ public final class DrawerInteractionListener implements Listener {
                 }
                 return;
             }
-            depositMatchingInventory(player, readyBarrel, state, stock.count(), player.isSneaking());
+            depositMatchingInventory(player, readyBarrel, state, stock.count(), true);
         } catch (final DrawerInvariantViolationException | IllegalArgumentException exception) {
             message(player, "general.configuration-error");
             this.context.logger().warning("Rejected drawer deposit at " + readyBarrel.getLocation() + ": " + exception.getMessage());
@@ -379,6 +421,10 @@ public final class DrawerInteractionListener implements Listener {
             message(player, "general.configuration-error");
             this.context.logger().warning("Rejected drawer withdrawal at " + readyBarrel.getLocation() + ": " + exception.getMessage());
         }
+    }
+
+    private void openMenu(final Player player, final ReadyDrawer ready) {
+        this.chestInventory.open(player, ready.barrel());
     }
 
     private void armBlockWithdrawal(final Player player, final Barrel barrel, final boolean bulk) {

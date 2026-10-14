@@ -23,7 +23,7 @@ import java.util.UUID;
 /** Atomic, fsync-backed receipt ledger. Mutating methods must run on the async scheduler. */
 public final class WithdrawalReceiptStore {
     private static final int MAGIC = 0x44534452;
-    private static final int FORMAT_VERSION = 1;
+    private static final int FORMAT_VERSION = 2;
     private static final int MAX_RECORDS = 100_000;
     private static final int MAX_TEMPLATE_BYTES = 4 * 1024 * 1024;
 
@@ -45,7 +45,7 @@ public final class WithdrawalReceiptStore {
                 throw new IOException("Withdrawal receipt ledger has an invalid header");
             }
             final int version = input.readInt();
-            if (version != FORMAT_VERSION) {
+            if (version != 1 && version != FORMAT_VERSION) {
                 throw new IOException("Unsupported withdrawal receipt ledger version " + version);
             }
             final int count = input.readInt();
@@ -53,7 +53,7 @@ public final class WithdrawalReceiptStore {
                 throw new IOException("Withdrawal receipt ledger record count is invalid");
             }
             for (int index = 0; index < count; index++) {
-                final WithdrawalReceipt receipt = read(input);
+                final WithdrawalReceipt receipt = read(input, version);
                 if (receipts.put(receipt.operationId(), receipt) != null) {
                     throw new IOException("Withdrawal receipt ledger contains a duplicate operation id");
                 }
@@ -73,7 +73,8 @@ public final class WithdrawalReceiptStore {
     }
 
     public synchronized List<WithdrawalReceipt> forOwner(final UUID ownerId) {
-        return receipts.values().stream().filter(receipt -> receipt.ownerId().equals(ownerId)).toList();
+        return receipts.values().stream().filter(receipt -> receipt.ownerId().equals(ownerId)
+                && receipt.status() != WithdrawalReceiptStatus.COMPLETED).toList();
     }
 
     public synchronized List<WithdrawalReceipt> snapshot() {
@@ -82,12 +83,18 @@ public final class WithdrawalReceiptStore {
 
     public synchronized void prepare(final WithdrawalReceipt receipt) throws IOException {
         Objects.requireNonNull(receipt, "receipt");
+        if (receipt.status() != WithdrawalReceiptStatus.PREPARED) {
+            throw new IOException("Only a prepared withdrawal can enter the receipt ledger");
+        }
         final WithdrawalReceipt existing = receipts.get(receipt.operationId());
         if (existing != null) {
             if (!existing.equals(receipt)) {
                 throw new IOException("Withdrawal receipt operation id already has different data");
             }
             return;
+        }
+        if (receipts.size() >= MAX_RECORDS) {
+            throw new IOException("Withdrawal receipt ledger is full; completion evidence cannot be discarded");
         }
         mutateAndPersist(() -> receipts.put(receipt.operationId(), receipt));
     }
@@ -97,7 +104,8 @@ public final class WithdrawalReceiptStore {
         if (existing == null) {
             throw new IOException("Cannot mark a missing withdrawal receipt deliverable");
         }
-        if (existing.status() == WithdrawalReceiptStatus.DELIVERABLE) {
+        if (existing.status() == WithdrawalReceiptStatus.DELIVERABLE
+                || existing.status() == WithdrawalReceiptStatus.COMPLETED) {
             return;
         }
         mutateAndPersist(() -> receipts.put(operationId, existing.withStatus(WithdrawalReceiptStatus.DELIVERABLE)));
@@ -112,7 +120,29 @@ public final class WithdrawalReceiptStore {
         if (present.isEmpty()) {
             return;
         }
+        for (final UUID operationId : present) {
+            if (receipts.get(operationId).status() != WithdrawalReceiptStatus.PREPARED) {
+                throw new IOException("Cannot erase delivery evidence for withdrawal " + operationId);
+            }
+        }
         mutateAndPersist(() -> present.forEach(receipts::remove));
+    }
+
+    /** Preserve compact tombstones before removing idempotency markers from playerdata. */
+    public synchronized void completeAll(final Collection<UUID> operationIds) throws IOException {
+        final List<UUID> unique = operationIds.stream().distinct().toList();
+        for (final UUID operationId : unique) {
+            final WithdrawalReceipt receipt = receipts.get(operationId);
+            if (receipt == null || receipt.status() == WithdrawalReceiptStatus.PREPARED) {
+                throw new IOException("Cannot complete an undeliverable withdrawal " + operationId);
+            }
+        }
+        final List<UUID> pending = unique.stream()
+                .filter(id -> receipts.get(id).status() != WithdrawalReceiptStatus.COMPLETED).toList();
+        if (!pending.isEmpty()) {
+            mutateAndPersist(() -> pending.forEach(id -> receipts.put(id,
+                    receipts.get(id).withStatus(WithdrawalReceiptStatus.COMPLETED))));
+        }
     }
 
     private void mutateAndPersist(final Runnable mutation) throws IOException {
@@ -152,7 +182,7 @@ public final class WithdrawalReceiptStore {
         }
     }
 
-    private static WithdrawalReceipt read(final DataInputStream input) throws IOException {
+    private static WithdrawalReceipt read(final DataInputStream input, final int version) throws IOException {
         final UUID operationId = readUuid(input);
         final UUID ownerId = readUuid(input);
         final UUID worldId = readUuid(input);
@@ -160,7 +190,7 @@ public final class WithdrawalReceiptStore {
         final int blockY = input.readInt();
         final int blockZ = input.readInt();
         final int templateLength = input.readInt();
-        if (templateLength < 1 || templateLength > MAX_TEMPLATE_BYTES) {
+        if (templateLength < 0 || templateLength > MAX_TEMPLATE_BYTES || version == 1 && templateLength == 0) {
             throw new IOException("Withdrawal receipt template length is invalid");
         }
         final byte[] templateBytes = input.readNBytes(templateLength);
@@ -169,7 +199,8 @@ public final class WithdrawalReceiptStore {
         }
         final long count = input.readLong();
         final int statusOrdinal = input.readUnsignedByte();
-        if (statusOrdinal >= WithdrawalReceiptStatus.values().length) {
+        if (statusOrdinal >= WithdrawalReceiptStatus.values().length
+                || version == 1 && statusOrdinal > WithdrawalReceiptStatus.DELIVERABLE.ordinal()) {
             throw new IOException("Withdrawal receipt status is invalid");
         }
         final long createdAt = input.readLong();

@@ -44,7 +44,7 @@ import org.joml.AxisAngle4f;
 import org.joml.Matrix4f;
 
 /**
- * Maintains Java display entities and a Bedrock-only armor-stand fallback for a drawer.
+ * Maintains Java display entities and a two-line armor-stand hologram for Floodgate players.
  * Runtime callers invoke {@link #refresh(Barrel, DrawerState, long)} only from the barrel's
  * region thread and only after the current storage state has been persisted.
  */
@@ -112,6 +112,7 @@ public final class DrawerVisualRenderer implements Listener {
         final ItemStack template = state.requireTemplate();
         final long total = displayedTotal(state, physicalCount);
         final FaceLayout layout = layout(barrel);
+        final BedrockLayout hologram = bedrockLayout(barrel);
         final DrawerDisplayLink current = state.displayLink();
         final World world = barrel.getWorld();
 
@@ -130,20 +131,21 @@ public final class DrawerVisualRenderer implements Listener {
                 layout.origin(), entity -> configureJavaAmount(entity, barrel.getBlock(), total, state.capacitySnapshot(), layout))
                 : null;
 
-        final ArmorStand bedrockItem = settings.bedrock().enabled()
+        // Reuse the two persisted Bedrock entity IDs so existing drawers need no data migration.
+        final ArmorStand bedrockItem = bedrockEnabled()
                 ? resolveOrSpawn(world, current.optionalBedrockItemDisplayId(), ArmorStand.class,
-                layout.item(), entity -> configureBedrockItem(entity, barrel.getBlock(), template, layout))
+                hologram.name(), entity -> configureBedrockItem(entity, barrel.getBlock(), template))
                 : null;
-        final ArmorStand bedrockText = settings.bedrock().enabled()
+        final ArmorStand bedrockText = bedrockEnabled()
                 ? resolveOrSpawn(world, current.optionalBedrockTextDisplayId(), ArmorStand.class,
-                layout.amount(), entity -> configureBedrockText(entity, barrel.getBlock(), template, total, state.capacitySnapshot(), layout))
+                hologram.amount(), entity -> configureBedrockText(entity, barrel.getBlock(), total, state.capacitySnapshot()))
                 : null;
 
         updateJavaItem(javaItem, template, layout);
         updateJavaName(javaName, template, layout);
         updateJavaAmount(javaAmount, total, state.capacitySnapshot(), layout);
-        updateBedrockItem(bedrockItem, template, layout);
-        updateBedrockText(bedrockText, template, total, state.capacitySnapshot(), layout);
+        updateBedrockItem(bedrockItem, template, hologram);
+        updateBedrockText(bedrockText, total, state.capacitySnapshot(), hologram);
 
         final DrawerDisplayLink next = new DrawerDisplayLink(
                 id(javaItem), id(javaName), id(javaAmount), id(bedrockItem), id(bedrockText)
@@ -279,7 +281,14 @@ public final class DrawerVisualRenderer implements Listener {
             return;
         }
         final String role = entity.getPersistentDataContainer().get(DrawerDisplayKeys.ROLE, PersistentDataType.STRING);
-        if (role == null || bedrockPlayers.isBedrock(event.getPlayer()) != role.startsWith("bedrock_")) {
+        final boolean floodgate = bedrockPlayers.isBedrock(event.getPlayer());
+        final boolean visible = role != null && settings.visuals().enabled() && switch (role) {
+            case "bedrock_item", "bedrock_text" -> floodgate && bedrockEnabled();
+            case "java_item" -> !floodgate && settings.visuals().itemEnabled();
+            case "java_name", "java_amount" -> !floodgate && settings.visuals().textEnabled();
+            default -> false;
+        };
+        if (!visible) {
             event.setCancelled(true);
         }
     }
@@ -346,40 +355,22 @@ public final class DrawerVisualRenderer implements Listener {
     private void configureBedrockItem(
             final ArmorStand stand,
             final Block drawer,
-            final ItemStack template,
-            final FaceLayout layout
+            final ItemStack template
     ) {
         tag(stand, drawer, "bedrock_item");
         stand.setVisibleByDefault(true);
-        stand.setGravity(false);
-        stand.setInvulnerable(true);
-        stand.setMarker(settings.bedrock().armorStandMarker());
-        stand.setInvisible(settings.bedrock().armorStandInvisible());
-        stand.setSmall(true);
-        if (settings.bedrock().armorStandShowItem() && stand.getEquipment() != null) {
-            stand.getEquipment().setHelmet(template.clone());
-        }
-        stand.setRotation(layout.yaw(), layout.pitch());
+        applyBedrockItem(stand, template);
     }
 
     private void configureBedrockText(
             final ArmorStand stand,
             final Block drawer,
-            final ItemStack template,
             final long total,
-            final long capacity,
-            final FaceLayout layout
+            final long capacity
     ) {
         tag(stand, drawer, "bedrock_text");
         stand.setVisibleByDefault(true);
-        stand.setGravity(false);
-        stand.setInvulnerable(true);
-        stand.setMarker(settings.bedrock().armorStandMarker());
-        stand.setInvisible(true);
-        stand.setSmall(true);
-        stand.customName(bedrockText(template, total, capacity));
-        stand.setCustomNameVisible(settings.bedrock().armorStandShowName());
-        stand.setRotation(layout.yaw(), layout.pitch());
+        applyBedrockText(stand, total, capacity);
     }
 
     private void updateJavaItem(final ItemDisplay display, final ItemStack template, final FaceLayout layout) {
@@ -410,31 +401,54 @@ public final class DrawerVisualRenderer implements Listener {
         });
     }
 
-    private void updateBedrockItem(final ArmorStand stand, final ItemStack template, final FaceLayout layout) {
+    private void updateBedrockItem(final ArmorStand stand, final ItemStack template, final BedrockLayout layout) {
         update(stand, entity -> {
             entity.setVisibleByDefault(true);
-            if (entity.getEquipment() != null && settings.bedrock().armorStandShowItem()) {
-                entity.getEquipment().setHelmet(template.clone());
-            }
-            entity.setRotation(layout.yaw(), layout.pitch());
-            teleport(entity, layout.item());
+            applyBedrockItem(entity, template);
+            teleport(entity, layout.name());
         });
     }
 
     private void updateBedrockText(
             final ArmorStand stand,
-            final ItemStack template,
             final long total,
             final long capacity,
-            final FaceLayout layout
+            final BedrockLayout layout
     ) {
         update(stand, entity -> {
             entity.setVisibleByDefault(true);
-            entity.customName(bedrockText(template, total, capacity));
-            entity.setCustomNameVisible(settings.bedrock().armorStandShowName());
-            entity.setRotation(layout.yaw(), layout.pitch());
+            applyBedrockText(entity, total, capacity);
             teleport(entity, layout.amount());
         });
+    }
+
+    private boolean bedrockEnabled() {
+        return settings.bedrock().enabled() && bedrockPlayers.isAvailable();
+    }
+
+    private void applyBedrockBase(final ArmorStand stand, final boolean invisible) {
+        stand.setGravity(false);
+        stand.setInvulnerable(true);
+        stand.setMarker(settings.bedrock().armorStandMarker());
+        stand.setInvisible(invisible);
+        stand.setSmall(true);
+        stand.setSilent(true);
+        stand.setCollidable(false);
+        stand.setCanPickupItems(false);
+        stand.setCustomNameVisible(settings.bedrock().armorStandShowName());
+    }
+
+    private void applyBedrockItem(final ArmorStand stand, final ItemStack template) {
+        applyBedrockBase(stand, settings.bedrock().armorStandInvisible());
+        stand.customName(displayName(template));
+        if (stand.getEquipment() != null) {
+            stand.getEquipment().setHelmet(settings.bedrock().armorStandShowItem() ? template.clone() : null);
+        }
+    }
+
+    private void applyBedrockText(final ArmorStand stand, final long total, final long capacity) {
+        applyBedrockBase(stand, true);
+        stand.customName(amountText(total, capacity));
     }
 
     private void tag(final Entity entity, final Block drawer, final String role) {
@@ -470,7 +484,7 @@ public final class DrawerVisualRenderer implements Listener {
             remove(worldEntity(world, link.optionalJavaNameTextDisplayId()));
             remove(worldEntity(world, link.optionalJavaAmountTextDisplayId()));
         }
-        if (!settings.bedrock().enabled()) {
+        if (!bedrockEnabled()) {
             remove(worldEntity(world, link.optionalBedrockItemDisplayId()));
             remove(worldEntity(world, link.optionalBedrockTextDisplayId()));
         }
@@ -504,10 +518,6 @@ public final class DrawerVisualRenderer implements Listener {
 
     private static Component amountText(final long total, final long capacity) {
         return Component.text(total + " / " + capacity);
-    }
-
-    private static Component bedrockText(final ItemStack template, final long total, final long capacity) {
-        return displayName(template).append(Component.text(" " + total + " / " + capacity));
     }
 
     /** Uses the item translation directly so TextDisplay does not render Paper's bracketed fallback name. */
@@ -602,6 +612,13 @@ public final class DrawerVisualRenderer implements Listener {
                 rotationPitch(face)
         );
     }
+
+    private BedrockLayout bedrockLayout(final Barrel barrel) {
+        final Location name = barrel.getLocation().add(0.5D, settings.bedrock().hologramHeight(), 0.5D);
+        return new BedrockLayout(name, name.clone().subtract(0D, settings.bedrock().hologramLineSpacing(), 0D));
+    }
+
+    private record BedrockLayout(Location name, Location amount) { }
 
     private static Location offset(final Location origin, final BlockFace face, final double amount) {
         return origin.clone().add(face.getModX() * amount, face.getModY() * amount, face.getModZ() * amount);

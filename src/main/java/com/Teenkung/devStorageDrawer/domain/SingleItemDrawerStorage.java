@@ -374,6 +374,22 @@ public final class SingleItemDrawerStorage implements DrawerStorageStrategy {
         }
 
         final DrawerProxyJournal journal = pendingJournal.get();
+        // Only the break coordinator can release its completed batches. Physical barrel stock
+        // cannot prove whether a PREPARED batch reached the world before an interruption.
+        if (journal.kind() == DrawerJournalKind.WORLD_DROP) {
+            return new DrawerJournalReconciliation(
+                    DrawerJournalReconciliation.Resolution.WORLD_DROP_UNRESOLVED,
+                    state, observedPhysicalProxyCount);
+        }
+        // Neither physical stock nor an APPLIED debit proves that an external recipient received it.
+        // Preserve both phases across restarts, including hidden-only withdrawals.
+        if (journal.kind().guardsDelivery()) {
+            return new DrawerJournalReconciliation(
+                    journal.kind() == DrawerJournalKind.GUARDED_PLAYER_TRANSFER
+                            ? DrawerJournalReconciliation.Resolution.PLAYER_TRANSFER_UNRESOLVED
+                            : DrawerJournalReconciliation.Resolution.EXTERNAL_SALE_UNRESOLVED,
+                    state, observedPhysicalProxyCount);
+        }
         if (observedPhysicalProxyCount > journal.totalBefore()) {
             return new DrawerJournalReconciliation(
                     DrawerJournalReconciliation.Resolution.IMPOSSIBLE_PHYSICAL_COUNT,

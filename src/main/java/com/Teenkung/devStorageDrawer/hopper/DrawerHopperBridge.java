@@ -50,6 +50,7 @@ public final class DrawerHopperBridge implements Listener {
     private final ConcurrentMap<DrawerKey, RebalanceWork> queuedRebalances = new ConcurrentHashMap<>();
     private final Set<DrawerKey> quarantinedMismatches = ConcurrentHashMap.newKeySet();
     private final Set<DrawerKey> quarantinedInvalidStates = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> nativePlayerTransfers = ConcurrentHashMap.newKeySet();
     private final ConcurrentMap<DrawerKey, WatchedDrawer> watchedDrawers = new ConcurrentHashMap<>();
     private final AtomicBoolean active = new AtomicBoolean(true);
 
@@ -66,6 +67,24 @@ public final class DrawerHopperBridge implements Listener {
      * rejected search to {@code null} means the hopper keeps its item; this still works on hopper
      * implementations which bypass {@link InventoryMoveItemEvent}.
      */
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onHopperExternalSaleGuard(final HopperInventorySearchEvent event) {
+        if (!isActive()) return;
+        // Preserve an unresolved sale even when move events or drawer automation are disabled.
+        // Source searches matter too: eventless extraction must not bypass the sale quarantine.
+        if (!Bukkit.isOwnedByCurrentRegion(event.getSearchBlock().getLocation())) {
+            event.setInventory(null);
+            return;
+        }
+        final Barrel drawer = this.context.blocks().barrel(event.getSearchBlock()).orElse(null);
+        if (drawer == null || !this.context.repository().isDrawer(drawer)) return;
+        if (this.context.repository().read(drawer) instanceof DrawerStateReadResult.Valid valid
+                && valid.state().proxyJournal().filter(journal -> journal.kind().guardsDelivery()
+                        || journal.kind() == DrawerJournalKind.WORLD_DROP).isPresent()) {
+            event.setInventory(null);
+        }
+    }
+
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onHopperDestinationSearch(final HopperInventorySearchEvent event) {
         if (!isActive() || !this.context.settings().automation().enabled()
@@ -224,7 +243,11 @@ public final class DrawerHopperBridge implements Listener {
         this.queuedRebalances.clear();
         this.quarantinedMismatches.clear();
         this.quarantinedInvalidStates.clear();
+        this.nativePlayerTransfers.clear();
     }
+
+    public void beginNativePlayerTransfer(final UUID operation) { this.nativePlayerTransfers.add(operation); }
+    public void endNativePlayerTransfer(final UUID operation) { this.nativePlayerTransfers.remove(operation); }
 
     private void scheduleRebalancePass(
             final DrawerKey key,
@@ -353,6 +376,19 @@ public final class DrawerHopperBridge implements Listener {
         }
 
         DrawerState state = valid.state();
+        if (state.proxyJournal().filter(journal -> journal.kind() == DrawerJournalKind.WORLD_DROP).isPresent()) {
+            return;
+        }
+        if (state.proxyJournal().filter(journal -> journal.kind().guardsDelivery()).isPresent()) {
+            final var journal = state.proxyJournal().orElseThrow();
+            if (journal.kind() == DrawerJournalKind.GUARDED_PLAYER_TRANSFER
+                    && this.nativePlayerTransfers.contains(journal.operationId())) return;
+            if (this.quarantinedInvalidStates.add(DrawerKey.of(current.getLocation()))) {
+                this.context.logger().warning("Drawer delivery requires reconciliation at " + current.getLocation()
+                        + " operation=" + state.proxyJournal().orElseThrow().operationId());
+            }
+            return;
+        }
         DrawerBlockAccess.PhysicalStock stock = this.context.blocks().inspect(current, state);
         observePhysical(current, stock.count());
         debug("reconciling " + current.getLocation() + " template=" + state.hasTemplate()
@@ -427,7 +463,8 @@ public final class DrawerHopperBridge implements Listener {
                     stock.count(),
                     this.context.settings().automation().outputProxySlots()
             );
-            if (!plan.requiresRebalance() && DrawerProxyInventory.needsRepack(
+            if (!plan.requiresRebalance() && current.getInventory().getViewers().isEmpty()
+                    && DrawerProxyInventory.needsRepack(
                     current,
                     state.requireTemplate(),
                     stock.count(),

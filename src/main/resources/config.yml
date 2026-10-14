@@ -1,10 +1,45 @@
 # DevStorageDrawer global settings. Strings in messages.yml use MiniMessage.
 config-version: 1
 
+# Opens from the anvil button in the storage menu. Economy is resolved through Vault;
+# minedream-core-smp can publish its Core economy as the Vault provider.
+upgrade:
+  enabled: true
+  session-seconds: 45
+  maximum-distance: 8
+  # Compatibility fallback for existing tiers.yml files. A tier-local upgrade section wins.
+  routes:
+    tier_1: {next-tier: tier_2, cost: 1000, permission: ""}
+    tier_2: {next-tier: tier_3, cost: 3000, permission: ""}
+
+storage-menu:
+  # Large chest: 45 item slots and 9 navigation slots. Only changed slots are refreshed.
+  refresh-ticks: 4
+  # Vanilla material or UniItems provider:id (e.g. nexo:next_page,
+  # itemsadder:my_pack:next_page, mmoitems:MISCELLANEOUS:MENU_ICON).
+  # Provider plugins must be installed. Missing items use the original vanilla icon
+  # and log once per control until /drawers reload. Names/lore stay in messages.yml.
+  items:
+    previous:
+      material: ARROW
+    next:
+      material: ARROW
+    first:
+      material: GRAY_STAINED_GLASS_PANE
+    last:
+      material: GRAY_STAINED_GLASS_PANE
+    page:
+      material: PAPER
+    upgrade:
+      material: ANVIL
+    separator:
+      material: BLACK_STAINED_GLASS_PANE
+
 interaction:
   # A second matching right-click within this window deposits matching inventory stacks.
   bulk-deposit-window-ticks: 10
-  require-facing-face: true
+  # false allows opening, deposits, withdrawals, and sell tools from any face.
+  require-facing-face: false
 
 visuals:
   enabled: true
@@ -28,12 +63,18 @@ visuals:
     name-offset-y: 0.30
     amount-offset-y: -0.42
 
-# Bedrock clients cannot render Java ItemDisplay entities. The fallback is required.
+# Two-line holograms visible only to players identified by the backend Floodgate API.
+# No Bedrock entities are created when Floodgate is unavailable.
 bedrock:
-  enabled: false
+  enabled: true
   required: false
+  hologram:
+    # Armor-stand name-row position above the drawer's base, readable from every side.
+    height: 1.35
+    line-spacing: 0.25
   armor-stand:
-    show-item: true
+    # Optional helmet item; Java custom models need a matching Bedrock resource pack.
+    show-item: false
     show-name: true
     marker: true
     invisible: true
@@ -65,6 +106,12 @@ redstone:
   protect-from-explosions: true
   prevent-piston-movement: true
 
+breaking:
+  # Filled drawers drop real items in native stacks. The barrel remains until all batches finish.
+  # Each completed batch saves its remaining stock; hopper/player transfers pause during breaking.
+  stacks-per-tick: 16
+
+# Retained for compatibility with existing recovery parcels. Drawer breaks use normal items.
 parcels:
   enabled: true
   drop-on-break: true

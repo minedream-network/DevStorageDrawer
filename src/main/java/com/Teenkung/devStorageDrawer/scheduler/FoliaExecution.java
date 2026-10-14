@@ -63,6 +63,13 @@ public final class FoliaExecution {
         );
     }
 
+    public void runLaterOnEntity(final Entity entity, final long delayTicks,
+            final Consumer<ScheduledTask> action, final Runnable retired) {
+        if (delayTicks < 1) throw new IllegalArgumentException("delayTicks must be positive");
+        Objects.requireNonNull(entity, "entity").getScheduler().runDelayed(plugin,
+                Objects.requireNonNull(action, "action"), Objects.requireNonNull(retired, "retired"), delayTicks);
+    }
+
     private static Location checkedLocation(final Location location) {
         final Location checked = Objects.requireNonNull(location, "location");
         if (checked.getWorld() == null) {

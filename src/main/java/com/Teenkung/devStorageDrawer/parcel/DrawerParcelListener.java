@@ -63,10 +63,19 @@ public final class DrawerParcelListener implements Listener {
                 }
                 player.sendMessage(messages.get().component("parcel.claimed", Map.of("amount", result.moved())));
             }
+            case RECONCILED -> {
+                if (result.exhausted()) {
+                    itemEntity.remove();
+                } else {
+                    itemEntity.setItemStack(parcel);
+                    parcels.configureDroppedParcel(itemEntity);
+                }
+            }
             case OWNER_ONLY -> player.sendMessage(messages.get().component(
                     "parcel.owner-only", Map.of("owner", result.ownerId())
             ));
             case INVENTORY_FULL -> player.sendMessage(messages.get().component("parcel.inventory-full"));
+            case PERSISTENCE_FAILURE -> player.sendMessage(messages.get().component("general.configuration-error"));
             case NOT_PARCEL -> {
                 // The item changed after this event was scheduled; cancellation is still safest.
             }
@@ -100,7 +109,8 @@ public final class DrawerParcelListener implements Listener {
         }
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    // Run before menus that cancel vanilla movement and perform their own transfer.
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onInventoryClick(final InventoryClickEvent event) {
         final boolean currentParcel = parcels.isParcel(event.getCurrentItem());
         final boolean cursorParcel = parcels.isParcel(event.getCursor());
@@ -119,7 +129,7 @@ public final class DrawerParcelListener implements Listener {
         event.setCancelled(true);
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onInventoryDrag(final InventoryDragEvent event) {
         if (!parcels.isParcel(event.getOldCursor())) {
             return;
@@ -147,10 +157,12 @@ public final class DrawerParcelListener implements Listener {
                 }
                 event.getPlayer().sendMessage(messages.get().component("parcel.claimed", Map.of("amount", result.moved())));
             }
+            case RECONCILED -> setHeldItem(event.getPlayer(), event.getHand(), result.exhausted() ? null : item);
             case OWNER_ONLY -> event.getPlayer().sendMessage(messages.get().component(
                     "parcel.owner-only", Map.of("owner", result.ownerId())
             ));
             case INVENTORY_FULL -> event.getPlayer().sendMessage(messages.get().component("parcel.inventory-full"));
+            case PERSISTENCE_FAILURE -> event.getPlayer().sendMessage(messages.get().component("general.configuration-error"));
             case NOT_PARCEL -> {
                 // Nothing to do.
             }

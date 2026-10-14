@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.logging.Level;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
@@ -79,34 +80,79 @@ public final class DrawerParcelService {
         if (!data.ownerId().equals(player.getUniqueId())) {
             return ClaimResult.ownerOnly(data.ownerId());
         }
-        long remaining = data.count();
-        long moved = 0L;
-        final int nativeStackSize = data.template().getMaxStackSize();
-        while (remaining > 0L) {
-            final int offer = (int) Math.min((long) nativeStackSize, remaining);
-            final ItemStack stack = data.template().clone();
-            stack.setAmount(offer);
-            final Map<Integer, ItemStack> leftovers = player.getInventory().addItem(stack);
-            final int leftover = leftovers.values().stream().mapToInt(ItemStack::getAmount).sum();
-            final int inserted = offer - leftover;
-            if (inserted <= 0) {
-                break;
-            }
-            moved += inserted;
-            remaining -= inserted;
-            if (leftover > 0) {
-                break;
-            }
+        final PersistentDataContainer playerData = player.getPersistentDataContainer();
+        final NamespacedKey progressKey = claimProgressKey(data.parcelId());
+        final Long savedRemaining = playerData.get(progressKey, PersistentDataType.LONG);
+        long remaining = ParcelClaimProgress.available(data.count(), savedRemaining);
+        if (remaining == 0L) {
+            return ClaimResult.reconciled(data.ownerId(), true);
         }
 
-        if (moved == 0L) {
+        final ItemStack[] inventoryBefore = cloneContents(player.getInventory().getStorageContents());
+        long moved = 0L;
+        final int nativeStackSize = data.template().getMaxStackSize();
+        try {
+            while (remaining > 0L) {
+                final int offer = (int) Math.min((long) nativeStackSize, remaining);
+                final ItemStack stack = data.template().clone();
+                stack.setAmount(offer);
+                final Map<Integer, ItemStack> leftovers = player.getInventory().addItem(stack);
+                final int leftover = leftovers.values().stream().mapToInt(ItemStack::getAmount).sum();
+                final int inserted = offer - leftover;
+                if (inserted <= 0) {
+                    break;
+                }
+                moved += inserted;
+                remaining = ParcelClaimProgress.afterGrant(remaining, inserted);
+                if (leftover > 0) {
+                    break;
+                }
+            }
+            if (moved > 0L) {
+                // The granted inventory and this checkpoint share one playerdata save. If the
+                // world entity is rolled back after a crash, its parcel id limits the next claim.
+                playerData.set(progressKey, PersistentDataType.LONG, remaining);
+                player.saveData();
+            }
+        } catch (final RuntimeException exception) {
+            player.getInventory().setStorageContents(inventoryBefore);
+            if (savedRemaining == null) {
+                playerData.remove(progressKey);
+            } else {
+                playerData.set(progressKey, PersistentDataType.LONG, savedRemaining);
+            }
+            player.getServer().getLogger().log(Level.SEVERE,
+                    "DevStorageDrawer could not persist parcel claim " + data.parcelId()
+                            + " for " + player.getUniqueId(), exception);
+            return ClaimResult.persistenceFailure(data.ownerId());
+        }
+
+        if (moved == 0L && remaining == data.count()) {
             return ClaimResult.inventoryFull(data.ownerId());
+        }
+        if (remaining > 0L) {
+            write(parcel, new DrawerParcelData(data.parcelId(), data.ownerId(), data.template(), remaining));
+        }
+        if (moved == 0L) {
+            return ClaimResult.reconciled(data.ownerId(), false);
         }
         if (remaining == 0L) {
             return ClaimResult.claimed(data.ownerId(), moved, true);
         }
-        write(parcel, new DrawerParcelData(data.parcelId(), data.ownerId(), data.template(), remaining));
         return ClaimResult.claimed(data.ownerId(), moved, false);
+    }
+
+    private static NamespacedKey claimProgressKey(final UUID parcelId) {
+        // Keep completed checkpoints: an older world entity can reappear after any later restart.
+        return new NamespacedKey("devstoragedrawer", "claimed_parcel_" + parcelId.toString().replace("-", ""));
+    }
+
+    private static ItemStack[] cloneContents(final ItemStack[] contents) {
+        final ItemStack[] copy = new ItemStack[contents.length];
+        for (int index = 0; index < contents.length; index++) {
+            copy[index] = contents[index] == null ? null : contents[index].clone();
+        }
+        return copy;
     }
 
     /** Drops one normal-aging item entity owned by the breaker. */
@@ -182,12 +228,22 @@ public final class DrawerParcelService {
         static ClaimResult claimed(final UUID ownerId, final long moved, final boolean exhausted) {
             return new ClaimResult(ClaimStatus.CLAIMED, ownerId, moved, exhausted);
         }
+
+        static ClaimResult reconciled(final UUID ownerId, final boolean exhausted) {
+            return new ClaimResult(ClaimStatus.RECONCILED, ownerId, 0L, exhausted);
+        }
+
+        static ClaimResult persistenceFailure(final UUID ownerId) {
+            return new ClaimResult(ClaimStatus.PERSISTENCE_FAILURE, ownerId, 0L, false);
+        }
     }
 
     public enum ClaimStatus {
         NOT_PARCEL,
         OWNER_ONLY,
         INVENTORY_FULL,
-        CLAIMED
+        CLAIMED,
+        RECONCILED,
+        PERSISTENCE_FAILURE
     }
 }

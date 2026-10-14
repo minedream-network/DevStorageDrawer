@@ -12,6 +12,10 @@ tiers:
       custom-model-data: null
     capacity-stacks: 32
     placement-permission: ""
+    upgrade:
+      next-tier: tier_2
+      cost: 1000
+      permission: ""
   tier_2:
     item:
       material: BARREL
@@ -21,6 +25,10 @@ tiers:
       custom-model-data: null
     capacity-stacks: 64
     placement-permission: ""
+    upgrade:
+      next-tier: tier_3
+      cost: 3000
+      permission: ""
   tier_3:
     item:
       material: BARREL

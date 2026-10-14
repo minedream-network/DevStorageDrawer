@@ -95,3 +95,46 @@ items without command permissions.
 compile against the API package only and must not use `block`, `domain`, `hopper`,
 or `persistence` implementation classes. The older sell-wand bridge remains for
 binary compatibility but is deprecated because it requires manual Folia ownership.
+
+## Logical stock sales
+
+`DrawerSaleApi` (version `1.0.0`) is a separate optional service for sale tools that already handle a
+`PlayerInteractEvent` on the clicked block's owning region. Its methods are
+**synchronous and region-confined**, unlike `DevStorageDrawerApi`. Resolve it through
+`ServicesManager` only when DevStorageDrawer is enabled, and declare `softdepend`.
+
+Call `probeSaleTarget(player, block, clickedFace)` during the interaction. `NOT_DRAWER` means
+the tool may use its ordinary container path; every other status belongs to the
+drawer and the tool must cancel the vanilla interaction. `DENIED` covers the drawer's
+use permission and configured facing-face requirement. The selling plugin must also
+check its own protection hooks before accepting the sale.
+
+Prepare the seller's price and durable sale audit before scheduling the commit back
+to the drawer region. Call `withExternalSale(location, expectedProbe, maxAmount,
+operationId, callback)` there. It rechecks the exact logical template and requires
+the live total to be at least the probed total. Matching hopper input during the
+audit wait does not cancel the sale: it sells at most `min(maxAmount, expectedProbe.amount())`
+and leaves newly arrived stock in the drawer. A decreased total or changed item still
+rejects the quote before payment. No capacity or full-drawer condition is required. It
+journals the debit and invokes the synchronous callback with one copied template
+and a `long` count. Return `PAID`, `REJECTED` (definitely no payment), or `UNKNOWN`.
+Drawer restores a rejected sale before returning, so compensation cannot race a
+later hopper fill. Do not schedule payment asynchronously, create lists of stacks,
+or price the barrel's proxy inventory. The API is for trusted integrations; only
+the probe checks player permission, facing and configured withdrawal protection.
+
+If payment throws, returns `UNKNOWN`, or final persistence cannot be confirmed,
+the result is `RECONCILIATION_REQUIRED`. The `GUARDED_EXTERNAL_SALE` journal retains
+the operation ID and before/after totals; it blocks another sale, normal transfers
+and breaking. Both PREPARED and APPLIED journals survive automatic repair and restart.
+Check the matching seller audit and actual economy payment before an administrator
+resolves the stored journal. Never automatically retry, refund or clear it through
+`/drawers repair`. The plugins do not share an atomic economy transaction.
+
+On a ready drawer, the probe and sale commit each decode the state and inspect the
+mirror once. The commit reuses that fresh internal view only within its synchronous
+region callback; it never caches stock across the seller's audit wait. Hidden-only
+debits reuse the unchanged barrel snapshot until payment, and a rejected hidden-only
+debit restores the logical total after verifying the mirror without rebuilding it.
+The PREPARED, APPLIED and final persistence boundaries remain intact. Unresolved
+external-sale journals are rejected before another mirror scan or recovery attempt.

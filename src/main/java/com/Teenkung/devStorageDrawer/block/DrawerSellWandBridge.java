@@ -1,6 +1,7 @@
 package com.teenkung.devstoragedrawer.block;
 
 import com.teenkung.devstoragedrawer.api.DrawerChangeCause;
+import com.teenkung.devstoragedrawer.api.DrawerSaleApi;
 import com.teenkung.devstoragedrawer.domain.DrawerInvariantViolationException;
 import com.teenkung.devstoragedrawer.domain.DrawerJournalKind;
 import com.teenkung.devstoragedrawer.domain.DrawerJournalPhase;
@@ -29,7 +30,7 @@ public final class DrawerSellWandBridge {
     private final DrawerRuntimeContext context;
     private final DrawerHopperBridge hoppers;
 
-    DrawerSellWandBridge(final DrawerRuntimeContext context, final DrawerHopperBridge hoppers) {
+    public DrawerSellWandBridge(final DrawerRuntimeContext context, final DrawerHopperBridge hoppers) {
         this.context = Objects.requireNonNull(context, "context");
         this.hoppers = Objects.requireNonNull(hoppers, "hoppers");
     }
@@ -47,6 +48,13 @@ public final class DrawerSellWandBridge {
         if (barrel == null || !this.context.repository().isDrawer(barrel)) {
             return false;
         }
+        return canSellFrom(player, barrel, clickedFace);
+    }
+
+    boolean canSellFrom(final Player player, final Barrel barrel, final BlockFace clickedFace) {
+        if (player == null || !player.hasPermission("devstoragedrawer.use")) {
+            return false;
+        }
         return !this.context.settings().interaction().requireFacingFace()
                 || barrel.getBlockData() instanceof Directional directional && directional.getFacing() == clickedFace;
     }
@@ -60,6 +68,99 @@ public final class DrawerSellWandBridge {
         return new Snapshot(ready.state().requireTemplate(), ready.state().totalForPhysical(ready.stock().count()));
     }
 
+    /** Holds the durable journal across payment, including reentrant plugin callbacks. */
+    DrawerSaleApi.SaleResult withExternalSale(final ReadyDrawer ready, final long amount,
+            final UUID operationId, final DrawerSaleApi.Payment callback) {
+        return withDelivery(ready, amount, operationId, callback,
+                DrawerJournalKind.GUARDED_EXTERNAL_SALE, DrawerChangeCause.EXTERNAL_SALE);
+    }
+
+    /** Synchronous chest delivery; the caller must validate and completely apply the player move. */
+    public DrawerSaleApi.SaleResult transferToPlayer(final Barrel barrel, final ItemStack expected,
+            final long amount, final DrawerSaleApi.Payment delivery) {
+        final ReadyDrawer ready = readyDrawer(barrel);
+        if (amount <= 0 || ready == null || !ready.state().matchesTemplate(expected)) {
+            return DrawerSaleApi.SaleResult.UNAVAILABLE;
+        }
+        return withDelivery(ready, amount, UUID.randomUUID(), delivery,
+                DrawerJournalKind.GUARDED_PLAYER_TRANSFER, DrawerChangeCause.PLAYER_WITHDRAW);
+    }
+
+    private DrawerSaleApi.SaleResult withDelivery(final ReadyDrawer ready, final long amount,
+            final UUID operationId, final DrawerSaleApi.Payment callback,
+            final DrawerJournalKind kind, final DrawerChangeCause cause) {
+        final Barrel barrel = ready.barrel();
+        final DrawerStorageTransaction transaction = this.context.storage().withdraw(ready.state(), ready.stock().count(), amount);
+        if (!transaction.accepted() || transaction.acceptedAmount() != amount) {
+            return DrawerSaleApi.SaleResult.STOCK_CHANGED;
+        }
+        final ItemStack template = transaction.itemTemplate().orElseThrow();
+        final DrawerProxyJournal journal = new DrawerProxyJournal(operationId,
+                kind, DrawerJournalPhase.PREPARED, null,
+                transaction.stateBefore().totalForPhysical(transaction.physicalBefore()),
+                transaction.stateAfter().totalForPhysical(transaction.physicalAfter()),
+                transaction.physicalBefore(), transaction.physicalAfter(), System.currentTimeMillis());
+        final DrawerState applied = (transaction.stateAfter().hasTemplate() ? transaction.stateAfter()
+                : transaction.stateAfter().withTemplate(template)).withProxyJournal(journal.withPhase(DrawerJournalPhase.APPLIED));
+        if (!this.context.repository().save(ready.barrel(), transaction.stateBefore().withProxyJournal(journal))) {
+            return DrawerSaleApi.SaleResult.UNAVAILABLE;
+        }
+        // From this point, every failure leaves durable evidence. Only a confirmed rejection
+        // can restore stock; a provider exception may occur after it credited the player.
+        try {
+            final long physicalTaken = transaction.physicalBefore() - transaction.physicalAfter();
+            if (physicalTaken > 0 && !DrawerProxyInventory.remove(ready.barrel(), template, physicalTaken)) {
+                return finishRejectedSale(ready.barrel(), template, transaction, cause);
+            }
+            // Hidden-only debits did not change the snapshot's physical inventory. Physical
+            // removal still requires a fresh Barrel before saving PDC, to avoid copying stock back.
+            final Barrel live = physicalTaken == 0L ? ready.barrel()
+                    : this.context.blocks().barrel(barrel.getBlock()).orElse(null);
+            if (live == null || !this.context.repository().save(live, applied)) {
+                return finishRejectedSale(ready.barrel(), template, transaction, cause);
+            }
+            final DrawerSaleApi.PaymentOutcome payment;
+            try {
+                payment = callback.pay(template.clone(), amount);
+            } catch (RuntimeException | LinkageError exception) {
+                this.context.logger().warning("Unknown drawer delivery " + operationId + ": " + exception.getMessage());
+                return DrawerSaleApi.SaleResult.RECONCILIATION_REQUIRED;
+            }
+            if (payment == DrawerSaleApi.PaymentOutcome.REJECTED) {
+                return finishRejectedSale(live, template, transaction, cause);
+            }
+            if (payment != DrawerSaleApi.PaymentOutcome.PAID) {
+                return DrawerSaleApi.SaleResult.RECONCILIATION_REQUIRED;
+            }
+            return commit(live, transaction.stateAfter(), transaction.physicalAfter(), cause)
+                    ? DrawerSaleApi.SaleResult.SOLD : DrawerSaleApi.SaleResult.RECONCILIATION_REQUIRED;
+        } catch (RuntimeException | LinkageError exception) {
+            this.context.logger().warning("Unresolved drawer delivery " + operationId + ": " + exception.getMessage());
+            return DrawerSaleApi.SaleResult.RECONCILIATION_REQUIRED;
+        }
+    }
+
+    private DrawerSaleApi.SaleResult finishRejectedSale(final Barrel barrel, final ItemStack template,
+            final DrawerStorageTransaction transaction, final DrawerChangeCause cause) {
+        final Barrel live = this.context.blocks().barrel(barrel.getBlock()).orElse(null);
+        if (live == null) {
+            return DrawerSaleApi.SaleResult.RECONCILIATION_REQUIRED;
+        }
+        if (transaction.physicalBefore() == transaction.physicalAfter()) {
+            // A rejected hidden-only debit needs only its logical total restored. Verify the
+            // mirror rather than clearing and rebuilding up to 27 unchanged physical stacks.
+            final DrawerBlockAccess.PhysicalStock stock = this.context.blocks().inspect(live, transaction.stateBefore());
+            if (!stock.matchesTemplate() || stock.count() != transaction.physicalBefore()) {
+                return DrawerSaleApi.SaleResult.RECONCILIATION_REQUIRED;
+            }
+        } else if (!DrawerProxyInventory.rewrite(live, template, transaction.physicalBefore(),
+                this.context.settings().automation().outputProxySlots())) {
+            return DrawerSaleApi.SaleResult.RECONCILIATION_REQUIRED;
+        }
+        return commit(live, transaction.stateBefore(), transaction.physicalBefore(), cause)
+                ? DrawerSaleApi.SaleResult.REJECTED : DrawerSaleApi.SaleResult.RECONCILIATION_REQUIRED;
+    }
+
     /**
      * Removes all logical stock for a completed external sale. If this returns success, the caller
      * owns the returned amount and must either sell it or call {@link #restore(Barrel, ItemStack, long)}.
@@ -70,10 +171,15 @@ public final class DrawerSellWandBridge {
 
     /** Shared durable withdrawal path for trusted integrations, always called on the drawer region. */
     Withdrawal withdraw(final Barrel barrel, final long requestedAmount, final DrawerChangeCause cause) {
+        return withdraw(barrel, requestedAmount, cause, UUID.randomUUID());
+    }
+
+    Withdrawal withdraw(final Barrel barrel, final long requestedAmount, final DrawerChangeCause cause, final UUID operationId) {
         if (requestedAmount <= 0L) {
             return Withdrawal.failed();
         }
         Objects.requireNonNull(cause, "cause");
+        Objects.requireNonNull(operationId, "operationId");
         final ReadyDrawer ready = readyDrawer(barrel);
         if (ready == null || !ready.state().hasTemplate()) {
             return Withdrawal.failed();
@@ -93,7 +199,7 @@ public final class DrawerSellWandBridge {
 
             final ItemStack template = transaction.itemTemplate().orElseThrow();
             final DrawerProxyJournal journal = new DrawerProxyJournal(
-                    UUID.randomUUID(),
+                    operationId,
                     DrawerJournalKind.EXTERNAL_SALE,
                     DrawerJournalPhase.PREPARED,
                     null,
@@ -255,7 +361,7 @@ public final class DrawerSellWandBridge {
                 .ifPresent(rewritten -> this.context.repository().save(rewritten, transaction.stateBefore()));
     }
 
-    private ReadyDrawer readyDrawer(final Barrel barrel) {
+    ReadyDrawer readyDrawer(final Barrel barrel) {
         if (barrel == null || !Bukkit.isOwnedByCurrentRegion(barrel.getLocation())) {
             return null;
         }
@@ -267,6 +373,10 @@ public final class DrawerSellWandBridge {
             }
             final DrawerStateReadResult read = this.context.repository().read(current);
             if (read instanceof DrawerStateReadResult.Valid valid) {
+                if (valid.state().proxyJournal()
+                        .filter(journal -> journal.kind() == DrawerJournalKind.GUARDED_EXTERNAL_SALE).isPresent()) {
+                    return null;
+                }
                 final DrawerBlockAccess.PhysicalStock stock = this.context.blocks().inspect(current, valid.state());
                 if (stock.matchesTemplate() && !valid.state().hasPendingProxyJournal()) {
                     return new ReadyDrawer(current, valid.state(), stock);
@@ -326,6 +436,7 @@ public final class DrawerSellWandBridge {
         }
     }
 
-    private record ReadyDrawer(Barrel barrel, DrawerState state, DrawerBlockAccess.PhysicalStock stock) {
+    /** Internal view valid only inside one synchronous region callback. */
+    record ReadyDrawer(Barrel barrel, DrawerState state, DrawerBlockAccess.PhysicalStock stock) {
     }
 }

@@ -17,7 +17,8 @@ public record DrawerTierDefinition(
         DrawerTier tier,
         Component itemName,
         List<Component> itemLore,
-        Integer customModelData
+        Integer customModelData,
+        DrawerUpgradePath upgradePath
 ) {
     public DrawerTierDefinition {
         Objects.requireNonNull(tier, "tier");
@@ -29,6 +30,15 @@ public record DrawerTierDefinition(
         if (customModelData != null && customModelData < 0) {
             throw new IllegalArgumentException("customModelData must not be negative");
         }
+    }
+
+    public DrawerTierDefinition(final DrawerTier tier, final Component itemName,
+            final List<Component> itemLore, final Integer customModelData) {
+        this(tier, itemName, itemLore, customModelData, null);
+    }
+
+    public java.util.Optional<DrawerUpgradePath> optionalUpgradePath() {
+        return java.util.Optional.ofNullable(upgradePath);
     }
 
     public ItemStack createItem() {

@@ -12,7 +12,10 @@ public record DrawerJournalReconciliation(Resolution resolution, DrawerState sta
     }
 
     public boolean requiresManualRecovery() {
-        return this.resolution == Resolution.IMPOSSIBLE_PHYSICAL_COUNT;
+        return this.resolution == Resolution.IMPOSSIBLE_PHYSICAL_COUNT
+                || this.resolution == Resolution.EXTERNAL_SALE_UNRESOLVED
+                || this.resolution == Resolution.PLAYER_TRANSFER_UNRESOLVED
+                || this.resolution == Resolution.WORLD_DROP_UNRESOLVED;
     }
 
     public enum Resolution {
@@ -20,6 +23,9 @@ public record DrawerJournalReconciliation(Resolution resolution, DrawerState sta
         ROLLED_BACK,
         COMMITTED,
         PARTIALLY_APPLIED,
-        IMPOSSIBLE_PHYSICAL_COUNT
+        IMPOSSIBLE_PHYSICAL_COUNT,
+        EXTERNAL_SALE_UNRESOLVED,
+        PLAYER_TRANSFER_UNRESOLVED,
+        WORLD_DROP_UNRESOLVED
     }
 }

@@ -3,25 +3,32 @@ package com.teenkung.devstoragedrawer.block;
 import com.teenkung.devstoragedrawer.api.DrawerChangeCause;
 import com.teenkung.devstoragedrawer.config.DrawerTierDefinition;
 import com.teenkung.devstoragedrawer.domain.DrawerInvariantViolationException;
-import com.teenkung.devstoragedrawer.domain.DrawerItemIdentity;
 import com.teenkung.devstoragedrawer.domain.DrawerJournalKind;
 import com.teenkung.devstoragedrawer.domain.DrawerJournalReconciliation;
 import com.teenkung.devstoragedrawer.domain.DrawerState;
 import com.teenkung.devstoragedrawer.hopper.DrawerHopperBridge;
 import com.teenkung.devstoragedrawer.persistence.DrawerStateReadResult;
+import io.papermc.paper.dialog.Dialog;
+import io.papermc.paper.registry.data.dialog.ActionButton;
+import io.papermc.paper.registry.data.dialog.DialogBase;
+import io.papermc.paper.registry.data.dialog.action.DialogAction;
+import io.papermc.paper.registry.data.dialog.body.DialogBody;
+import io.papermc.paper.registry.data.dialog.type.DialogType;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import net.kyori.adventure.text.event.ClickCallback;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
-import org.bukkit.GameMode;
 import org.bukkit.Location;
-import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Barrel;
-import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
-import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -34,17 +41,26 @@ import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.event.world.ChunkUnloadEvent;
-import org.bukkit.inventory.ItemStack;
+import org.bukkit.event.player.PlayerQuitEvent;
 
 /** Placement, safe breaking, explosion/piston protection, and loaded-barrel repair. */
 public final class DrawerBlockListener implements Listener {
 
     private final DrawerRuntimeContext context;
     private final DrawerHopperBridge hoppers;
+    private final DrawerBreakDrops breakDrops;
+    private final Map<UUID, DrawerBreakTicket> pendingBreaks;
 
     public DrawerBlockListener(final DrawerRuntimeContext context, final DrawerHopperBridge hoppers) {
+        this(context, hoppers, new DrawerBreakDrops(context, hoppers), new ConcurrentHashMap<>());
+    }
+
+    DrawerBlockListener(final DrawerRuntimeContext context, final DrawerHopperBridge hoppers,
+            final DrawerBreakDrops breakDrops, final Map<UUID, DrawerBreakTicket> pendingBreaks) {
         this.context = Objects.requireNonNull(context, "context");
         this.hoppers = Objects.requireNonNull(hoppers, "hoppers");
+        this.breakDrops = Objects.requireNonNull(breakDrops, "breakDrops");
+        this.pendingBreaks = Objects.requireNonNull(pendingBreaks, "pendingBreaks");
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -78,72 +94,186 @@ public final class DrawerBlockListener implements Listener {
         if (barrel == null || !this.context.repository().isDrawer(barrel)) {
             return;
         }
-        // A queued hopper pass must not mutate the tile entity while the break flow removes it.
-        this.hoppers.unwatch(barrel);
-        final DrawerStateReadResult read = this.context.repository().read(barrel);
-        if (!(read instanceof DrawerStateReadResult.Valid valid)) {
-            allowFallbackBreak(event, barrel, "its persisted drawer state is invalid");
+        if (this.breakDrops.isInProgress(barrel)) {
+            event.setCancelled(true);
             return;
         }
-        DrawerState state = valid.state();
+        final DrawerStateReadResult read = this.context.repository().read(barrel);
+        if (!(read instanceof DrawerStateReadResult.Valid valid)) {
+            denyUnsafeBreak(event, barrel, "its persisted drawer state is invalid");
+            return;
+        }
+        DrawerState state = this.breakDrops.recoverInterrupted(barrel, valid.state());
         final DrawerBlockAccess.PhysicalStock stock = this.context.blocks().inspect(barrel, state);
         if (!stock.matchesTemplate()) {
-            allowFallbackBreak(event, barrel, "its proxy inventory does not match the drawer item");
+            denyUnsafeBreak(event, barrel, "its proxy inventory does not match the drawer item");
             return;
         }
         if (state.hasPendingProxyJournal()) {
             if (state.proxyJournal().filter(journal -> journal.kind() == DrawerJournalKind.PLAYER_WITHDRAWAL).isPresent()) {
-                allowFallbackBreak(event, barrel, "a player withdrawal is still being recovered");
+                denyUnsafeBreak(event, barrel, "a player withdrawal is still being recovered");
                 return;
             }
             try {
                 final DrawerJournalReconciliation recovery = this.context.storage().reconcile(state, stock.count());
                 if (recovery.requiresManualRecovery()) {
-                    allowFallbackBreak(event, barrel, "its hopper recovery journal has an impossible physical item count");
+                    denyUnsafeBreak(event, barrel, "its pending recovery journal requires reconciliation ("
+                            + recovery.resolution() + ")");
                     return;
                 }
                 state = recovery.state();
             } catch (final DrawerInvariantViolationException exception) {
-                allowFallbackBreak(event, barrel, "its hopper recovery journal cannot be resolved: " + exception.getMessage());
+                denyUnsafeBreak(event, barrel, "its hopper recovery journal cannot be resolved: " + exception.getMessage());
                 return;
             }
         }
         final DrawerTierDefinition tier = this.context.tier(state.tierId()).orElse(null);
         if (tier == null) {
-            allowFallbackBreak(event, barrel, "its configured tier no longer exists");
+            denyUnsafeBreak(event, barrel, "its configured tier no longer exists");
             return;
         }
         final long total;
         try {
             total = state.totalForPhysical(stock.count());
         } catch (final DrawerInvariantViolationException exception) {
-            allowFallbackBreak(event, barrel, "its stored item total is invalid");
-            return;
-        }
-        if (total > 0L && (!this.context.settings().parcels().enabled() || !this.context.settings().parcels().dropOnBreak())) {
-            denyUnsafeBreak(event, barrel, "contents parcels are disabled");
+            denyUnsafeBreak(event, barrel, "its stored item total is invalid");
             return;
         }
 
-        // A valid drawer owns its break completely. Leaving a non-empty barrel to vanilla exposes
-        // the physical proxy inventory to container/drop listeners and can cause a stale tile
-        // entity update to be sent back to the client.
+        final String fingerprint;
+        try {
+            // Approval identifies the drawer and item, while quantity is read again when the
+            // confirmed break starts. Hopper transfers must not invalidate an open dialog.
+            // The drop journal debits that fresh total, including transfers already completed.
+            final byte[] template = state.serializedTemplate();
+            fingerprint = state.tierId() + ":" + state.capacitySnapshot() + ":"
+                    + (template == null ? "" : Base64.getEncoder().encodeToString(template));
+        } catch (final RuntimeException exception) {
+            denyUnsafeBreak(event, barrel, "its state could not be checked before confirmation");
+            return;
+        }
+        final DrawerBreakTicket.BlockKey key = new DrawerBreakTicket.BlockKey(
+                barrel.getWorld().getUID(), barrel.getX(), barrel.getY(), barrel.getZ()
+        );
+        final UUID playerId = event.getPlayer().getUniqueId();
+        final DrawerBreakTicket pending = this.pendingBreaks.get(playerId);
+        final long now = System.currentTimeMillis();
+        if (pending == null || !pending.hasApproval()) {
+            event.setCancelled(true);
+            if (pending != null && pending.isDialogQueued(playerId, key, now)) return;
+            showBreakConfirmation(event.getPlayer(), key, fingerprint, total);
+            return;
+        }
+        if (!pending.consume(playerId, key, fingerprint, now)) {
+            event.setCancelled(true);
+            this.pendingBreaks.remove(playerId, pending);
+            event.getPlayer().sendMessage(this.context.messages().component("drawer.break-changed"));
+            return;
+        }
+        this.pendingBreaks.remove(playerId, pending);
+
         event.setCancelled(true);
         event.setDropItems(false);
         event.setExpToDrop(0);
-        // Do not update the barrel PDC during BlockBreakEvent; cleanup only removes entities.
-        this.context.removeRendersAt(barrel);
-        final Location blockLocation = barrel.getLocation();
-        final Location dropLocation = blockLocation.clone().add(0.5D, 0.5D, 0.5D);
-        barrel.getInventory().clear();
-        barrel.getBlock().setType(Material.AIR, false);
-        if (event.getPlayer().getGameMode() != GameMode.CREATIVE) {
-            barrel.getWorld().dropItemNaturally(dropLocation, tier.createItem());
-            if (total > 0L) {
-                this.context.parcelBreakHandler().dropContents(event.getPlayer(), dropLocation, state.requireTemplate(), total);
-            }
+        try {
+            this.breakDrops.begin(event.getPlayer(), barrel, state, tier.createItem());
+        } catch (final RuntimeException exception) {
+            denyUnsafeBreak(event, barrel, "its drops could not be prepared: " + exception.getMessage());
         }
-        resyncBrokenBlockForPlayer(event.getPlayer(), blockLocation);
+    }
+
+    private void showBreakConfirmation(
+            final Player player,
+            final DrawerBreakTicket.BlockKey key,
+            final String fingerprint,
+            final long total
+    ) {
+        final UUID playerId = player.getUniqueId();
+        final DrawerBreakTicket ticket = new DrawerBreakTicket(playerId, key, fingerprint, System.currentTimeMillis());
+        this.pendingBreaks.put(playerId, ticket);
+        this.context.execution().runOnEntity(player, ignored -> {
+            if (!player.isOnline() || this.pendingBreaks.get(playerId) != ticket) {
+                return;
+            }
+            try {
+                final ClickCallback.Options clickOptions = ClickCallback.Options.builder()
+                        .uses(1).lifetime(Duration.ofSeconds(60)).build();
+                final ActionButton confirm = ActionButton.builder(
+                        this.context.messages().dialogComponent("drawer.break-confirm")
+                ).action(DialogAction.customClick((response, audience) -> {
+                    if (!(audience instanceof Player clicked) || !clicked.getUniqueId().equals(playerId)) {
+                        return;
+                    }
+                    this.context.execution().runOnEntity(clicked, task -> confirmBreak(clicked, ticket),
+                            () -> this.pendingBreaks.remove(playerId, ticket));
+                }, clickOptions)).build();
+                final ActionButton cancel = ActionButton.builder(
+                        this.context.messages().dialogComponent("drawer.break-cancel")
+                ).action(DialogAction.customClick((response, audience) -> {
+                    if (!(audience instanceof Player clicked) || !clicked.getUniqueId().equals(playerId)) {
+                        return;
+                    }
+                    this.pendingBreaks.remove(playerId, ticket);
+                }, clickOptions)).build();
+                final String warningKey = total > 0L ? "drawer.break-warning" : "drawer.break-warning-empty";
+                final Dialog dialog = Dialog.create(factory -> factory.empty()
+                        .base(DialogBase.builder(this.context.messages().dialogComponent("drawer.break-title"))
+                                .body(List.of(DialogBody.plainMessage(
+                                        this.context.messages().dialogComponent(warningKey, Map.of("amount", total))
+                                )))
+                                .canCloseWithEscape(true)
+                                .afterAction(DialogBase.DialogAfterAction.CLOSE)
+                                .build())
+                        .type(DialogType.confirmation(confirm, cancel)));
+                player.showDialog(dialog);
+                ticket.markDialogShown();
+            } catch (final RuntimeException exception) {
+                this.pendingBreaks.remove(playerId, ticket);
+                player.sendMessage(this.context.messages().component("drawer.break-unavailable"));
+                this.context.logger().warning("Could not show drawer break dialog to " + player.getName()
+                        + ": " + exception.getMessage());
+            }
+        }, () -> this.pendingBreaks.remove(playerId, ticket));
+    }
+
+    /** Called after the dialog closes, on the player's entity thread. */
+    void confirmBreak(final Player player, final DrawerBreakTicket ticket) {
+        final UUID playerId = player.getUniqueId();
+        if (this.pendingBreaks.get(playerId) != ticket) return;
+        try {
+            final DrawerBreakTicket.BlockKey key = ticket.block();
+            if (!player.isOnline() || !player.getWorld().getUID().equals(key.worldId())
+                    || !ticket.approve(System.currentTimeMillis())) {
+                player.sendMessage(this.context.messages().component("drawer.break-changed"));
+                return;
+            }
+            final Location location = new Location(player.getWorld(), key.x(), key.y(), key.z());
+            if (player.getLocation().distanceSquared(location) > 64D || !Bukkit.isOwnedByCurrentRegion(location)) {
+                player.sendMessage(this.context.messages().component("drawer.break-changed"));
+                return;
+            }
+            final Barrel current = this.context.blocks().barrel(location.getBlock()).orElse(null);
+            if (current == null || !this.context.repository().isDrawer(current)) {
+                player.sendMessage(this.context.messages().component("drawer.break-changed"));
+                return;
+            }
+            // Re-enter the normal server break event so protection plugins can veto it again.
+            // Our listener consumes this one-use approval and starts guarded drops immediately.
+            player.breakBlock(location.getBlock());
+            if (!ticket.wasConsumed() && this.pendingBreaks.get(playerId) == ticket) {
+                player.sendMessage(this.context.messages().component("drawer.break-unavailable"));
+            }
+        } catch (final RuntimeException exception) {
+            player.sendMessage(this.context.messages().component("drawer.break-unavailable"));
+            this.context.logger().warning("Could not complete confirmed drawer break: " + exception.getMessage());
+        } finally {
+            this.pendingBreaks.remove(playerId, ticket);
+        }
+    }
+
+    @EventHandler
+    public void onPlayerQuit(final PlayerQuitEvent event) {
+        this.pendingBreaks.remove(event.getPlayer().getUniqueId());
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -189,6 +319,7 @@ public final class DrawerBlockListener implements Listener {
 
     @EventHandler
     public void onChunkUnload(final ChunkUnloadEvent event) {
+        this.breakDrops.pause(event.getChunk());
         this.hoppers.unwatch(event.getChunk());
     }
 
@@ -221,6 +352,9 @@ public final class DrawerBlockListener implements Listener {
             this.context.execution().executeAt(location, () -> {
                 final Barrel live = this.context.blocks().barrel(location.getBlock()).orElse(null);
                 if (live != null) {
+                    if (this.context.repository().read(live) instanceof DrawerStateReadResult.Valid valid) {
+                        this.breakDrops.recoverInterrupted(live, valid.state());
+                    }
                     this.hoppers.watch(live);
                     this.hoppers.recoverAndRebalance(live);
                 }
@@ -228,66 +362,18 @@ public final class DrawerBlockListener implements Listener {
         }
     }
 
-    /**
-     * Corrupt or mismatched drawers release only their physical inventory. When their raw tier id
-     * is still configured, keep the tiered drawer item so placing the recovered drop never turns
-     * it into an ordinary barrel. Hidden stock is intentionally not recreated because it cannot
-     * be proven from invalid state.
-     */
-    private void allowFallbackBreak(final BlockBreakEvent event, final Barrel barrel, final String reason) {
-        this.hoppers.unwatch(barrel);
-        final DrawerTierDefinition tier = this.context.blocks().tierForDrawer(barrel).orElse(null);
-        if (tier == null) {
-            this.context.removeRendersAt(barrel);
-            this.context.logger().warning("Allowing vanilla break for drawer at " + barrel.getLocation() + " because " + reason
-                    + "; its tier is no longer configured, so only its physical barrel inventory can be recovered safely");
-            return;
-        }
-
-        event.setCancelled(true);
-        event.setDropItems(false);
-        event.setExpToDrop(0);
-        this.context.removeRendersAt(barrel);
-        final Location blockLocation = barrel.getLocation();
-        final Location dropLocation = blockLocation.clone().add(0.5D, 0.5D, 0.5D);
-        final List<ItemStack> physicalContents = new ArrayList<>();
-        for (final ItemStack item : barrel.getInventory().getContents()) {
-            if (DrawerItemIdentity.isStorageCandidate(item)) {
-                physicalContents.add(item.clone());
-            }
-        }
-        barrel.getInventory().clear();
-        barrel.getBlock().setType(Material.AIR, false);
-        if (event.getPlayer().getGameMode() != GameMode.CREATIVE) {
-            barrel.getWorld().dropItemNaturally(dropLocation, tier.createItem());
-            for (final ItemStack item : physicalContents) {
-                barrel.getWorld().dropItemNaturally(dropLocation, item);
-            }
-        }
-        this.context.logger().warning("Recovered drawer at " + blockLocation + " because " + reason
-                + "; returned its tiered drawer item and physical inventory only");
-        resyncBrokenBlockForPlayer(event.getPlayer(), blockLocation);
-    }
-
-    /** Prevents a break that would otherwise discard hidden contents when parcel recovery is disabled. */
+    /** Never destroy a drawer when its logical contents cannot be returned safely. */
     private void denyUnsafeBreak(final BlockBreakEvent event, final Barrel barrel, final String reason) {
         event.setCancelled(true);
         this.hoppers.watch(barrel);
         this.context.logger().warning("Cancelled break for drawer at " + barrel.getLocation() + " because " + reason
-                + "; enable parcels.drop-on-break before breaking a non-empty drawer");
+                + "; the stored contents remain in place");
+        event.getPlayer().sendMessage(this.context.messages().component("drawer.break-unavailable"));
     }
 
-    /** Re-sends the authoritative post-break block state to clear stale client tile entities. */
-    private void resyncBrokenBlockForPlayer(final Player player, final Location drawerLocation) {
-        final Location location = drawerLocation.clone();
-        this.context.execution().runLaterAt(location, 1L, ignored -> {
-            final BlockData actual = location.getBlock().getBlockData().clone();
-            this.context.execution().runOnEntity(
-                    player,
-                    ignoredTask -> player.sendBlockChange(location, actual),
-                    () -> { }
-            );
-        });
+    void disable() {
+        this.pendingBreaks.clear();
+        this.breakDrops.disable();
     }
 
     private record ChunkKey(World world, int x, int z) {

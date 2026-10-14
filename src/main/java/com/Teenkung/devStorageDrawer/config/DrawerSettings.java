@@ -12,7 +12,11 @@ public record DrawerSettings(
         Bedrock bedrock,
         Automation automation,
         Redstone redstone,
-        Parcels parcels
+        Parcels parcels,
+        Breaking breaking,
+        StorageMenu storageMenu,
+        Upgrade upgrade,
+        DrawerUpgradeMenu upgradeMenu
 ) {
     public DrawerSettings {
         tiers = Map.copyOf(Objects.requireNonNull(tiers, "tiers"));
@@ -25,6 +29,10 @@ public record DrawerSettings(
         Objects.requireNonNull(automation, "automation");
         Objects.requireNonNull(redstone, "redstone");
         Objects.requireNonNull(parcels, "parcels");
+        Objects.requireNonNull(breaking, "breaking");
+        Objects.requireNonNull(storageMenu, "storageMenu");
+        Objects.requireNonNull(upgrade, "upgrade");
+        Objects.requireNonNull(upgradeMenu, "upgradeMenu");
         if (redstone.logicalComparatorOutput()) {
             if (!automation.enabled() || automation.outputProxySlots() != 26) {
                 throw new IllegalArgumentException(
@@ -38,6 +46,68 @@ public record DrawerSettings(
                                     + definition.tier().id()
                     );
                 }
+            }
+        }
+    }
+
+    public DrawerSettings(final Map<String, DrawerTierDefinition> tiers, final Interaction interaction,
+            final Visuals visuals, final Bedrock bedrock, final Automation automation,
+            final Redstone redstone, final Parcels parcels) {
+        this(tiers, interaction, visuals, bedrock, automation, redstone, parcels, new Breaking(16));
+    }
+
+    public DrawerSettings(final Map<String, DrawerTierDefinition> tiers, final Interaction interaction,
+            final Visuals visuals, final Bedrock bedrock, final Automation automation,
+            final Redstone redstone, final Parcels parcels, final Breaking breaking) {
+        this(tiers, interaction, visuals, bedrock, automation, redstone, parcels, breaking, new StorageMenu(4));
+    }
+
+    public DrawerSettings(final Map<String, DrawerTierDefinition> tiers, final Interaction interaction,
+            final Visuals visuals, final Bedrock bedrock, final Automation automation,
+            final Redstone redstone, final Parcels parcels, final Breaking breaking,
+            final StorageMenu storageMenu) {
+        this(tiers, interaction, visuals, bedrock, automation, redstone, parcels, breaking, storageMenu,
+                new Upgrade(false, 45, 8D), DrawerUpgradeMenu.defaults());
+    }
+
+    public record Upgrade(boolean enabled, int sessionSeconds, double maximumDistance) {
+        public Upgrade {
+            if (sessionSeconds < 5 || sessionSeconds > 300) {
+                throw new IllegalArgumentException("upgrade.session-seconds must be between 5 and 300");
+            }
+            if (!Double.isFinite(maximumDistance) || maximumDistance < 1D || maximumDistance > 16D) {
+                throw new IllegalArgumentException("upgrade.maximum-distance must be between 1 and 16");
+            }
+        }
+    }
+
+    public record StorageMenu(long refreshTicks, Map<DrawerMenuIcon, String> materials) {
+        public StorageMenu {
+            if (refreshTicks < 1 || refreshTicks > 100) {
+                throw new IllegalArgumentException("storage-menu.refresh-ticks must be between 1 and 100");
+            }
+            final Map<DrawerMenuIcon, String> normalized = new java.util.EnumMap<>(DrawerMenuIcon.class);
+            Objects.requireNonNull(materials, "materials").forEach((icon, material) -> {
+                Objects.requireNonNull(icon, "icon");
+                if (material == null || material.isBlank()) {
+                    throw new IllegalArgumentException(icon.path() + " must be a material or provider:id");
+                }
+                normalized.put(icon, material.trim());
+            });
+            materials = Map.copyOf(normalized);
+        }
+
+        public StorageMenu(final long refreshTicks) { this(refreshTicks, Map.of()); }
+
+        public String material(final DrawerMenuIcon icon) {
+            return materials.getOrDefault(icon, icon.fallback().name());
+        }
+    }
+
+    public record Breaking(int stacksPerTick) {
+        public Breaking {
+            if (stacksPerTick < 1 || stacksPerTick > 128) {
+                throw new IllegalArgumentException("breaking.stacks-per-tick must be between 1 and 128");
             }
         }
     }
@@ -84,8 +154,24 @@ public record DrawerSettings(
             boolean armorStandShowItem,
             boolean armorStandShowName,
             boolean armorStandMarker,
-            boolean armorStandInvisible
+            boolean armorStandInvisible,
+            double hologramHeight,
+            double hologramLineSpacing
     ) {
+        public Bedrock {
+            if (!Double.isFinite(hologramHeight) || hologramHeight < 0.5D || hologramHeight > 4D) {
+                throw new IllegalArgumentException("bedrock.hologram.height must be between 0.5 and 4");
+            }
+            if (!Double.isFinite(hologramLineSpacing) || hologramLineSpacing < 0.1D || hologramLineSpacing > 1D) {
+                throw new IllegalArgumentException("bedrock.hologram.line-spacing must be between 0.1 and 1");
+            }
+        }
+
+        public Bedrock(final boolean enabled, final boolean required, final boolean armorStandShowItem,
+                final boolean armorStandShowName, final boolean armorStandMarker, final boolean armorStandInvisible) {
+            this(enabled, required, armorStandShowItem, armorStandShowName, armorStandMarker, armorStandInvisible,
+                    1.35D, 0.25D);
+        }
     }
 
     public record Automation(

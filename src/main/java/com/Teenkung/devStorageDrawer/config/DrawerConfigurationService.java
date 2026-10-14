@@ -3,6 +3,8 @@ package com.teenkung.devstoragedrawer.config;
 import com.teenkung.devstoragedrawer.domain.DrawerTier;
 import com.teenkung.devstoragedrawer.domain.DrawerValidationException;
 import java.io.File;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -19,7 +21,7 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.ItemDisplay;
 import org.bukkit.plugin.java.JavaPlugin;
 
-/** Loads the plugin's three user-facing YAML files into one validated runtime snapshot. */
+/** Loads the plugin's user-facing YAML files into one validated runtime snapshot. */
 public final class DrawerConfigurationService {
     private final JavaPlugin plugin;
     private final MiniMessage miniMessage = MiniMessage.miniMessage();
@@ -34,6 +36,7 @@ public final class DrawerConfigurationService {
         plugin.saveDefaultConfig();
         saveBundledDefault("tiers.yml");
         saveBundledDefault("messages.yml");
+        saveBundledDefault("upgrade-menu.yml");
         plugin.reloadConfig();
 
         final FileConfiguration configuration = plugin.getConfig();
@@ -45,13 +48,15 @@ public final class DrawerConfigurationService {
         final FileConfiguration messageConfiguration = YamlConfiguration.loadConfiguration(
                 new File(plugin.getDataFolder(), "messages.yml")
         );
+        final FileConfiguration upgradeMenuConfiguration = loadBundledConfiguration("upgrade-menu.yml");
+        migrateBreakMessages(messageConfiguration);
         final HopperTransferPolicy hopperTransfers = parseHopperTransfers(configuration);
 
         this.settings = new DrawerSettings(
-                parseTiers(tiers),
+                parseTiers(tiers, configuration),
                 new DrawerSettings.Interaction(
                         positiveInt(configuration, "interaction.bulk-deposit-window-ticks"),
-                        configuration.getBoolean("interaction.require-facing-face", true)
+                        configuration.getBoolean("interaction.require-facing-face", false)
                 ),
                 new DrawerSettings.Visuals(
                         configuration.getBoolean("visuals.enabled", true),
@@ -71,11 +76,13 @@ public final class DrawerConfigurationService {
                 ),
                 new DrawerSettings.Bedrock(
                         configuration.getBoolean("bedrock.enabled", true),
-                        configuration.getBoolean("bedrock.required", true),
-                        configuration.getBoolean("bedrock.armor-stand.show-item", true),
+                        configuration.getBoolean("bedrock.required", false),
+                        configuration.getBoolean("bedrock.armor-stand.show-item", false),
                         configuration.getBoolean("bedrock.armor-stand.show-name", true),
                         configuration.getBoolean("bedrock.armor-stand.marker", true),
-                        configuration.getBoolean("bedrock.armor-stand.invisible", true)
+                        configuration.getBoolean("bedrock.armor-stand.invisible", true),
+                        configuration.getDouble("bedrock.hologram.height", 1.35D),
+                        configuration.getDouble("bedrock.hologram.line-spacing", 0.25D)
                 ),
                 new DrawerSettings.Automation(
                         configuration.getBoolean("automation.enabled", true),
@@ -95,13 +102,60 @@ public final class DrawerConfigurationService {
                 new DrawerSettings.Parcels(
                         configuration.getBoolean("parcels.enabled", true),
                         configuration.getBoolean("parcels.drop-on-break", true)
-                )
+                ),
+                new DrawerSettings.Breaking(configuration.getInt("breaking.stacks-per-tick", 16)),
+                parseStorageMenu(configuration),
+                new DrawerSettings.Upgrade(
+                        configuration.getBoolean("upgrade.enabled", true),
+                        configuration.getInt("upgrade.session-seconds", 45),
+                        configuration.getDouble("upgrade.maximum-distance", 8D)
+                ),
+                DrawerUpgradeMenu.parse(upgradeMenuConfiguration)
         );
         this.messages = new DrawerMessages(flattenMessages(messageConfiguration));
     }
 
     public DrawerSettings settings() {
         return requireLoaded(settings, "settings");
+    }
+
+    static DrawerSettings.StorageMenu parseStorageMenu(final ConfigurationSection configuration) {
+        final Map<DrawerMenuIcon, String> materials = new java.util.EnumMap<>(DrawerMenuIcon.class);
+        for (final DrawerMenuIcon icon : DrawerMenuIcon.values()) {
+            final Object configured = configuration.get(icon.path());
+            if (configured == null) continue;
+            if (!(configured instanceof String material) || material.isBlank()) {
+                throw new DrawerValidationException(icon.path() + " must be a material or provider:id");
+            }
+            materials.put(icon, material);
+        }
+        return new DrawerSettings.StorageMenu(configuration.getLong("storage-menu.refresh-ticks", 4), materials);
+    }
+
+    private void migrateBreakMessages(final FileConfiguration messages) {
+        // Upgrade only the old bundled wording. Preserve server-specific translations and edits.
+        final Map<String, List<String>> oldDefaults = Map.of(
+                "drawer.break-warning", List.of(
+                        "<gray>This drawer holds <white><amount> <gray>item(s). The drawer block and one owner-bound contents parcel will drop. Confirm, then break it once more within 15 seconds.",
+                        "<gray>This drawer holds <white><amount> <gray>item(s). Its contents will drop as normal item stacks, followed by the drawer block. Large amounts drop in batches. Confirm, then break it once more within 15 seconds."),
+                "drawer.break-warning-empty", List.of("<gray>This drawer is empty. Confirm, then break it once more within 15 seconds."),
+                "drawer.break-approved", List.of("<yellow>◆ <gray>Confirmed. Break this drawer again within 15 seconds."),
+                "drawer.break-unavailable", List.of("<red>✘ <gray>Break cancelled to protect stored items. Ask an administrator to repair the drawer or check the server log.")
+        );
+        try (final var resource = plugin.getResource("messages.yml")) {
+            if (resource == null) return;
+            final var defaults = YamlConfiguration.loadConfiguration(new InputStreamReader(resource, StandardCharsets.UTF_8));
+            messages.setDefaults(defaults);
+            messages.options().copyDefaults(true);
+            for (final var entry : oldDefaults.entrySet()) {
+                final String current = messages.getString(entry.getKey());
+                if (current != null && entry.getValue().contains(current)) {
+                    messages.set(entry.getKey(), defaults.getString(entry.getKey()));
+                }
+            }
+        } catch (final java.io.IOException exception) {
+            throw new DrawerValidationException("Could not load default break messages", exception);
+        }
     }
 
     public DrawerMessages messages() {
@@ -120,6 +174,20 @@ public final class DrawerConfigurationService {
         final File file = new File(plugin.getDataFolder(), resource);
         if (!file.exists()) {
             plugin.saveResource(resource, false);
+        }
+    }
+
+    private FileConfiguration loadBundledConfiguration(final String resource) {
+        final File file = new File(plugin.getDataFolder(), resource);
+        if (file.isFile()) return YamlConfiguration.loadConfiguration(file);
+        java.io.InputStream stream = plugin.getResource(resource);
+        if (stream == null) stream = DrawerConfigurationService.class.getClassLoader().getResourceAsStream(resource);
+        if (stream == null) throw new DrawerValidationException("Missing bundled configuration: " + resource);
+        final java.io.InputStream loaded = stream;
+        try (loaded) {
+            return YamlConfiguration.loadConfiguration(new InputStreamReader(loaded, StandardCharsets.UTF_8));
+        } catch (final java.io.IOException exception) {
+            throw new DrawerValidationException("Could not load bundled configuration: " + resource, exception);
         }
     }
 
@@ -191,7 +259,8 @@ public final class DrawerConfigurationService {
         return fallback;
     }
 
-    private Map<String, DrawerTierDefinition> parseTiers(final FileConfiguration configuration) {
+    private Map<String, DrawerTierDefinition> parseTiers(final FileConfiguration configuration,
+            final ConfigurationSection globalConfiguration) {
         final int configVersion = configuration.getInt("config-version", -1);
         if (configVersion != 1) {
             throw new DrawerValidationException("Unsupported tiers.yml config-version: " + configVersion);
@@ -222,7 +291,31 @@ public final class DrawerConfigurationService {
                     positiveLong(tier, "capacity-stacks"),
                     tier.getString("placement-permission", "")
             );
-            definitions.put(id, new DrawerTierDefinition(drawerTier, miniMessage.deserialize(name), lore, customModelData));
+            ConfigurationSection upgrade = tier.getConfigurationSection("upgrade");
+            if (upgrade == null) {
+                upgrade = globalConfiguration.getConfigurationSection("upgrade.routes." + id);
+            }
+            final DrawerUpgradePath upgradePath = upgrade == null ? null : new DrawerUpgradePath(
+                    requiredString(upgrade, "next-tier", "Tier " + id + " upgrade needs next-tier"),
+                    nonNegativeDouble(upgrade, "cost"),
+                    upgrade.getString("permission", "")
+            );
+            definitions.put(id, new DrawerTierDefinition(
+                    drawerTier, miniMessage.deserialize(name), lore, customModelData, upgradePath
+            ));
+        }
+        for (final DrawerTierDefinition definition : definitions.values()) {
+            final DrawerUpgradePath path = definition.upgradePath();
+            if (path == null) continue;
+            final DrawerTierDefinition target = definitions.get(path.nextTierId());
+            if (target == null) {
+                throw new DrawerValidationException("Tier " + definition.tier().id()
+                        + " upgrades to unknown tier " + path.nextTierId());
+            }
+            if (target.tier().stackCapacity() <= definition.tier().stackCapacity()) {
+                throw new DrawerValidationException("Tier " + definition.tier().id()
+                        + " must upgrade to a tier with greater capacity");
+            }
         }
         return definitions;
     }
@@ -281,6 +374,14 @@ public final class DrawerConfigurationService {
         final long value = configuration.getLong(path, defaultValue);
         if (value < 1L) {
             throw new DrawerValidationException(path + " must be a positive whole number");
+        }
+        return value;
+    }
+
+    private static double nonNegativeDouble(final ConfigurationSection configuration, final String path) {
+        final double value = configuration.getDouble(path, Double.NaN);
+        if (!Double.isFinite(value) || value < 0D) {
+            throw new DrawerValidationException(path + " must be a finite non-negative number");
         }
         return value;
     }

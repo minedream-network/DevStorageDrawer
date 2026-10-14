@@ -25,13 +25,15 @@ public record WithdrawalReceipt(
         Objects.requireNonNull(worldId, "worldId");
         Objects.requireNonNull(templateBytes, "templateBytes");
         Objects.requireNonNull(status, "status");
-        if (templateBytes.length < 1 || templateBytes.length > MAX_TEMPLATE_BYTES) {
+        if (templateBytes.length > MAX_TEMPLATE_BYTES
+                || status != WithdrawalReceiptStatus.COMPLETED && templateBytes.length < 1) {
             throw new IllegalArgumentException("Withdrawal receipt template length is invalid");
         }
         if (count < 1L || createdAtEpochMillis < 0L) {
             throw new IllegalArgumentException("Withdrawal receipt count and timestamp must be valid");
         }
-        templateBytes = templateBytes.clone();
+        // Completed receipts retain identity/ownership evidence without retaining item payloads.
+        templateBytes = status == WithdrawalReceiptStatus.COMPLETED ? new byte[0] : templateBytes.clone();
     }
 
     @Override
@@ -40,6 +42,9 @@ public record WithdrawalReceipt(
     }
 
     public WithdrawalReceipt withStatus(final WithdrawalReceiptStatus replacement) {
+        if (this.status == WithdrawalReceiptStatus.COMPLETED && replacement != this.status) {
+            throw new IllegalArgumentException("A completed withdrawal cannot be reopened");
+        }
         return new WithdrawalReceipt(
                 this.operationId,
                 this.ownerId,

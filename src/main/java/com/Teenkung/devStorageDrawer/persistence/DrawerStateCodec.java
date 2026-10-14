@@ -6,11 +6,13 @@ import org.bukkit.inventory.ItemStack;
 
 /** Serializes only the persistent primitive payload; the PDC adapter is {@link DrawerPdcCodec}. */
 public final class DrawerStateCodec {
+    private final DrawerTemplateDecodeCache templates;
+
+    public DrawerStateCodec() { this(new DrawerTemplateDecodeCache()); }
+    DrawerStateCodec(final DrawerTemplateDecodeCache templates) { this.templates = java.util.Objects.requireNonNull(templates); }
 
     public DrawerStatePayload encode(final DrawerState state) {
-        final byte[] templateBytes = state.template()
-                .map(ItemStack::serializeAsBytes)
-                .orElse(null);
+        final byte[] templateBytes = state.serializedTemplate();
         return new DrawerStatePayload(
                 state.schemaVersion(),
                 state.tierId(),
@@ -37,7 +39,7 @@ public final class DrawerStateCodec {
             throw new DrawerValidationException("Drawer template bytes must not be empty");
         } else {
             try {
-                template = ItemStack.deserializeBytes(templateBytes);
+                template = this.templates.decode(templateBytes);
             } catch (final RuntimeException exception) {
                 throw new DrawerValidationException("Drawer template bytes cannot be decoded", exception);
             }

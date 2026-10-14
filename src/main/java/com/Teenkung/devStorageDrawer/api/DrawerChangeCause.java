@@ -8,6 +8,7 @@ public enum DrawerChangeCause {
     AUTOMATION,
     RECOVERY,
     MIGRATION,
+    UPGRADE,
     EXTERNAL_SALE,
     API_DEPOSIT,
     API_WITHDRAW,

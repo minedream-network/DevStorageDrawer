@@ -1,6 +1,7 @@
 package com.teenkung.devstoragedrawer;
 
 import com.teenkung.devstoragedrawer.api.DevStorageDrawerApi;
+import com.teenkung.devstoragedrawer.api.DrawerSaleApi;
 import com.teenkung.devstoragedrawer.bedrock.BedrockPlayerDetector;
 import com.teenkung.devstoragedrawer.block.DrawerRuntime;
 import com.teenkung.devstoragedrawer.block.DrawerSellWandBridge;
@@ -43,6 +44,7 @@ public final class DevStorageDrawer extends JavaPlugin {
     private WithdrawalReceiptStore withdrawalReceipts;
     private SingleItemDrawerStorage storage;
     private DevStorageDrawerApi api;
+    private DrawerSaleApi saleApi;
 
     @Override
     public void onEnable() {
@@ -99,7 +101,7 @@ public final class DevStorageDrawer extends JavaPlugin {
                         visuals.removeAt(barrel);
                     }
                 },
-                (owner, location, template, total) -> parcels.dropForBreak(owner, location, template, total),
+                (owner, template, total) -> parcels.createParcel(owner.getUniqueId(), template, total),
                 withdrawalReceipts,
                 entity -> resolveDisplayTarget(entity, repository),
                 pluginManager.isPluginEnabled("WorldGuard")
@@ -108,6 +110,8 @@ public final class DevStorageDrawer extends JavaPlugin {
         );
         api = runtime.api();
         getServer().getServicesManager().register(DevStorageDrawerApi.class, api, this, ServicePriority.Normal);
+        saleApi = runtime.saleApi();
+        getServer().getServicesManager().register(DrawerSaleApi.class, saleApi, this, ServicePriority.Normal);
 
         runtime.listeners().forEach(listener -> pluginManager.registerEvents(listener, this));
         pluginManager.registerEvents(visuals, this);
@@ -133,6 +137,10 @@ public final class DevStorageDrawer extends JavaPlugin {
         if (api != null) {
             getServer().getServicesManager().unregister(DevStorageDrawerApi.class, api);
             api = null;
+        }
+        if (saleApi != null) {
+            getServer().getServicesManager().unregister(DrawerSaleApi.class, saleApi);
+            saleApi = null;
         }
         // Drawer state is written synchronously on every mutation. Display entities remain persistent
         // and are reconciled through their PDC link on the next enable/chunk load.
@@ -168,6 +176,7 @@ public final class DevStorageDrawer extends JavaPlugin {
                 visuals.reloadSettings(settings);
                 runtime.reloadSettings(settings);
                 runtime.reloadMessages(messages);
+                runtime.repairLoadedDrawers();
             }
 
             @Override
@@ -194,6 +203,10 @@ public final class DevStorageDrawer extends JavaPlugin {
 
     private boolean validateBedrockRequirement(final DrawerSettings settings, final PluginManager pluginManager) {
         if (!settings.bedrock().enabled() || !settings.bedrock().required()) {
+            if (settings.bedrock().enabled() && !bedrockPlayers.isAvailable()) {
+                getLogger().warning("Floodgate holograms are enabled but backend Floodgate is unavailable; "
+                        + "the Java renderer remains available. Install Floodgate on this backend for Bedrock holograms.");
+            }
             return true;
         }
         final boolean floodgate = pluginManager.isPluginEnabled("floodgate");

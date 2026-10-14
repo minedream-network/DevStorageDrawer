@@ -21,6 +21,7 @@ public final class DrawerState {
     private final int schemaVersion;
     private final String tierId;
     private final ItemStack template;
+    private final TemplateEncoding templateEncoding;
     private final long hiddenCount;
     private final long expectedMirrorCount;
     private final long capacitySnapshot;
@@ -37,6 +38,14 @@ public final class DrawerState {
             final DrawerProxyJournal proxyJournal,
             final DrawerDisplayLink displayLink
     ) {
+        this(schemaVersion, tierId, template, hiddenCount, expectedMirrorCount, capacitySnapshot,
+                proxyJournal, displayLink, null);
+    }
+
+    private DrawerState(final int schemaVersion, final String tierId, final ItemStack template,
+            final long hiddenCount, final long expectedMirrorCount, final long capacitySnapshot,
+            final DrawerProxyJournal proxyJournal, final DrawerDisplayLink displayLink,
+            final TemplateEncoding sharedEncoding) {
         if (schemaVersion <= 0 || schemaVersion > CURRENT_SCHEMA_VERSION) {
             throw new DrawerValidationException("Unsupported drawer schema version " + schemaVersion);
         }
@@ -63,7 +72,7 @@ public final class DrawerState {
             }
             normalizedTemplate = null;
         } else {
-            normalizedTemplate = DrawerItemIdentity.templateOf(template);
+            normalizedTemplate = sharedEncoding == null ? DrawerItemIdentity.templateOf(template) : template;
         }
 
         if (proxyJournal != null && (proxyJournal.totalBefore() > capacitySnapshot
@@ -74,6 +83,8 @@ public final class DrawerState {
         this.schemaVersion = schemaVersion;
         this.tierId = tierId;
         this.template = normalizedTemplate;
+        this.templateEncoding = normalizedTemplate == null ? null
+                : sharedEncoding == null ? new TemplateEncoding(normalizedTemplate) : sharedEncoding;
         this.hiddenCount = hiddenCount;
         this.expectedMirrorCount = expectedMirrorCount;
         this.capacitySnapshot = capacitySnapshot;
@@ -137,6 +148,8 @@ public final class DrawerState {
     }
 
     public boolean hasTemplate() { return this.template != null; }
+    /** Defensive bytes shared by immutable count/journal copies, without re-serializing the same item. */
+    public byte[] serializedTemplate() { return this.templateEncoding == null ? null : this.templateEncoding.bytes(); }
     public boolean matchesTemplate(final ItemStack candidate) { return this.template != null && DrawerItemIdentity.matches(this.template, candidate); }
 
     /** Schema 1 hidden count; schema 2 authoritative stored total. */
@@ -242,6 +255,16 @@ public final class DrawerState {
                 newCapacitySnapshot, this.proxyJournal, this.displayLink);
     }
 
+    /** Changes a placed drawer to another configured tier while preserving all stored state. */
+    public DrawerState withTierAndCapacitySnapshot(final String newTierId, final long newCapacitySnapshot) {
+        if (newTierId == null || newTierId.isBlank()) {
+            throw new DrawerValidationException("Drawer tier id must not be blank");
+        }
+        return new DrawerState(this.schemaVersion, newTierId, this.template, this.hiddenCount,
+                this.expectedMirrorCount, newCapacitySnapshot, this.proxyJournal, this.displayLink,
+                this.templateEncoding);
+    }
+
     public DrawerState initializeCapacityForFirstItem(final DrawerTier tier, final ItemStack firstItem) {
         Objects.requireNonNull(tier, "tier");
         DrawerItemIdentity.requireStorageCandidate(firstItem, "First drawer item");
@@ -258,7 +281,30 @@ public final class DrawerState {
             final int version, final ItemStack newTemplate, final long count, final long expected,
             final long capacity, final DrawerProxyJournal journal, final DrawerDisplayLink link
     ) {
-        return new DrawerState(version, this.tierId, newTemplate, count, expected, capacity, journal, link);
+        // Only our own private prototype can be shared. External templates are normalized and copied.
+        return new DrawerState(version, this.tierId, newTemplate, count, expected, capacity, journal, link,
+                newTemplate == this.template ? this.templateEncoding : null);
+    }
+
+    private static final class TemplateEncoding {
+        private final ItemStack prototype;
+        private volatile byte[] cached;
+
+        private TemplateEncoding(final ItemStack prototype) { this.prototype = prototype; }
+
+        private byte[] bytes() {
+            byte[] result = cached;
+            if (result == null) {
+                synchronized (this) {
+                    result = cached;
+                    if (result == null) {
+                        result = prototype.serializeAsBytes();
+                        if (result.length <= 65_536) cached = result.clone();
+                    }
+                }
+            }
+            return result.clone();
+        }
     }
 
     @Override

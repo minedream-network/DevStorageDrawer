@@ -1,5 +1,6 @@
 package com.teenkung.devstoragedrawer.block;
 
+import com.teenkung.devstoragedrawer.bedrock.BedrockPlayerDetector;
 import com.teenkung.devstoragedrawer.config.DrawerTierDefinition;
 import com.teenkung.devstoragedrawer.display.DrawerVisualRenderer;
 import com.teenkung.devstoragedrawer.domain.DrawerDisplayLink;
@@ -480,12 +481,19 @@ public final class DevStorageDrawerAcceptance {
             final DrawerDisplayLink link = ((DrawerStateReadResult.Valid) read).state().displayLink();
             require(link.javaItemDisplayId() != null, "Java item display is missing");
             require(link.javaNameTextDisplayId() != null && link.javaAmountTextDisplayId() != null, "Java text display is missing");
-            require(link.bedrockItemDisplayId() != null && link.bedrockTextDisplayId() != null, "Bedrock fallback is missing");
             verifyFrontEntity(barrel, entry.getKey(), link.javaItemDisplayId(), ItemDisplay.class);
             verifyFrontEntity(barrel, entry.getKey(), link.javaNameTextDisplayId(), TextDisplay.class);
             verifyFrontEntity(barrel, entry.getKey(), link.javaAmountTextDisplayId(), TextDisplay.class);
-            verifyFrontEntity(barrel, entry.getKey(), link.bedrockItemDisplayId(), ArmorStand.class);
-            verifyFrontEntity(barrel, entry.getKey(), link.bedrockTextDisplayId(), ArmorStand.class);
+            if (context.settings().bedrock().enabled()
+                    && BedrockPlayerDetector.create(plugin.getServer().getPluginManager()).isAvailable()) {
+                require(link.bedrockItemDisplayId() != null && link.bedrockTextDisplayId() != null, "Floodgate hologram is missing");
+                verifyHologramRow(barrel, link.bedrockItemDisplayId(), context.settings().bedrock().hologramHeight());
+                verifyHologramRow(barrel, link.bedrockTextDisplayId(), context.settings().bedrock().hologramHeight()
+                        - context.settings().bedrock().hologramLineSpacing());
+            } else {
+                require(link.bedrockItemDisplayId() == null && link.bedrockTextDisplayId() == null,
+                        "Floodgate hologram was created without its enabled backend API");
+            }
             final Entity itemEntity = barrel.getWorld().getEntity(link.javaItemDisplayId());
             require(itemEntity instanceof ItemDisplay itemDisplay
                             && itemDisplay.getItemDisplayTransform() == context.settings().visuals().itemTransform()
@@ -502,6 +510,15 @@ public final class DevStorageDrawerAcceptance {
                     "Java text display sizing is not configured correctly");
         }
         plugin.getLogger().info("Acceptance: all six Java/Bedrock display facings passed");
+    }
+
+    private void verifyHologramRow(final Barrel barrel, final UUID entityId, final double height) {
+        final Entity entity = barrel.getWorld().getEntity(entityId);
+        require(entity instanceof ArmorStand, "Hologram row has the wrong entity type");
+        final Location expected = barrel.getLocation().add(0.5D, height, 0.5D);
+        require(entity.getLocation().distanceSquared(expected) < 0.01D, "Hologram row is not above its drawer");
+        require(visuals.drawerLocation(entity).filter(barrel.getLocation()::equals).isPresent(),
+                "Hologram ownership link is invalid");
     }
 
     private void verifyFrontEntity(

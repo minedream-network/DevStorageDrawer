@@ -3,7 +3,7 @@ package com.teenkung.devstoragedrawer.bedrock;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.PluginManager;
 
-/** Identifies Bedrock players without packet interception. */
+/** Identifies players authenticated through the backend Floodgate API. */
 public interface BedrockPlayerDetector {
     BedrockPlayerDetector NONE = new BedrockPlayerDetector() {
         @Override
@@ -18,13 +18,10 @@ public interface BedrockPlayerDetector {
     };
 
     static BedrockPlayerDetector create(final PluginManager pluginManager) {
-        final boolean floodgate = pluginManager.isPluginEnabled("floodgate");
-        final boolean geyser = pluginManager.isPluginEnabled("Geyser-Spigot")
-                || pluginManager.isPluginEnabled("Geyser");
-        if (!floodgate && !geyser) {
+        if (!pluginManager.isPluginEnabled("floodgate")) {
             return NONE;
         }
-        return new GeyserFloodgatePlayerDetector(floodgate, geyser);
+        return new FloodgatePlayerDetector();
     }
 
     boolean isAvailable();
