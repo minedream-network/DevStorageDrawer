@@ -46,7 +46,7 @@ final class DrawerSaleService implements DrawerSaleApi {
         if (ready == null) return new Probe(Status.UNAVAILABLE, null, 0L);
         long total = ready.state().totalForPhysical(ready.stock().count());
         if (total > 0L && ready.state().hasTemplate()) {
-            return new Probe(Status.READY, ready.state().requireTemplate(), total);
+            return new Probe(Status.READY, ready.state().requireTemplate(), total, player, face);
         }
         return new Probe(Status.EMPTY, null, 0L);
     }
@@ -64,6 +64,17 @@ final class DrawerSaleService implements DrawerSaleApi {
         Block block = location.getBlock();
         Barrel barrel = context.blocks().barrel(block).orElse(null);
         if (barrel == null) return SaleResult.STOCK_CHANGED;
+        // A quote is only a snapshot. Permissions, facing and region protection may all
+        // change while the caller prepares its payment audit; fail before any stock read or
+        // journal write if the original click would no longer be permitted.
+        final Player actor = expected.actor();
+        final BlockFace face = expected.clickedFace();
+        if (actor == null || face == null || !Bukkit.isOwnedByCurrentRegion(actor)
+                || !actor.isOnline() || !context.repository().isDrawer(barrel)
+                || !bridge.canSellFrom(actor, barrel, face)
+                || !protection.canWithdraw(actor, barrel)) {
+            return SaleResult.UNAVAILABLE;
+        }
         // Hopper input may grow the stock while the seller prepares its audit. Recheck the
         // item and require at least the quoted stock; sell only the quoted amount so new
         // arrivals remain in the drawer and the payment still matches the prepared audit.

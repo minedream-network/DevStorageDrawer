@@ -11,7 +11,7 @@ softdepend: [Vault, minedream-core-smp, Geyser-Spigot, floodgate, WorldGuard, It
 commands:
   drawers:
     description: Manage DevStorageDrawer drawer tiers and repairs.
-    usage: "/drawers <give|reload|repair|migrate>"
+    usage: "/drawers <give|reload|repair|migrate|upgrade>"
     aliases: [drawer]
 
 permissions:
@@ -29,6 +29,7 @@ permissions:
       devstoragedrawer.admin.reload: true
       devstoragedrawer.admin.repair: true
       devstoragedrawer.admin.migrate: true
+      devstoragedrawer.admin.upgrade-reconcile: true
   devstoragedrawer.admin.give:
     description: Give configured drawer tier items.
     default: op
@@ -40,4 +41,7 @@ permissions:
     default: op
   devstoragedrawer.admin.migrate:
     description: Apply an explicit configured-tier capacity migration.
+    default: op
+  devstoragedrawer.admin.upgrade-reconcile:
+    description: Inspect and manually resolve paid drawer upgrade intents after external verification.
     default: op

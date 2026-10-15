@@ -174,6 +174,27 @@ public final class DrawerRuntime {
         return this.saleService;
     }
 
+    public boolean upgradeLedgerAvailable() {
+        return this.upgradeService.ledgerAvailable();
+    }
+
+    public List<DrawerUpgradeService.PendingUpgrade> pendingUpgradeOperations() {
+        return this.upgradeService.pendingOperations();
+    }
+
+    public boolean resolveUpgradeOperation(final java.util.UUID id,
+            final DrawerUpgradeService.Resolution resolution) {
+        return this.upgradeService.resolveOperation(id, resolution);
+    }
+
+    public void verifyLoadedUpgrade(final Barrel barrel) {
+        this.upgradeService.verifyLoadedBarrel(barrel);
+    }
+
+    public void verifyLoadedUpgradeOperations() {
+        this.upgradeService.verifyLoadedOperations();
+    }
+
     /** Stable public integration contract. Internal runtime types remain private implementation details. */
     public DevStorageDrawerApi api() {
         return this.api;

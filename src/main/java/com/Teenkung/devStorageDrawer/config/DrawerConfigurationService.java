@@ -12,6 +12,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.bukkit.Material;
@@ -25,14 +26,21 @@ import org.bukkit.plugin.java.JavaPlugin;
 public final class DrawerConfigurationService {
     private final JavaPlugin plugin;
     private final MiniMessage miniMessage = MiniMessage.miniMessage();
-    private DrawerSettings settings;
-    private DrawerMessages messages;
+    private volatile Snapshot snapshot;
+
+    private record Snapshot(DrawerSettings settings, DrawerMessages messages) { }
 
     public DrawerConfigurationService(final JavaPlugin plugin) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
     }
 
     public void load() {
+        load(ignored -> { });
+    }
+
+    /** Validates a complete candidate before publishing either settings or messages. */
+    public void load(final Consumer<DrawerSettings> validator) {
+        Objects.requireNonNull(validator, "validator");
         plugin.saveDefaultConfig();
         saveBundledDefault("tiers.yml");
         saveBundledDefault("messages.yml");
@@ -52,7 +60,7 @@ public final class DrawerConfigurationService {
         migrateBreakMessages(messageConfiguration);
         final HopperTransferPolicy hopperTransfers = parseHopperTransfers(configuration);
 
-        this.settings = new DrawerSettings(
+        final DrawerSettings nextSettings = new DrawerSettings(
                 parseTiers(tiers, configuration),
                 parseInteraction(configuration),
                 new DrawerSettings.Visuals(
@@ -109,11 +117,13 @@ public final class DrawerConfigurationService {
                 ),
                 DrawerUpgradeMenu.parse(upgradeMenuConfiguration)
         );
-        this.messages = new DrawerMessages(flattenMessages(messageConfiguration));
+        final DrawerMessages nextMessages = new DrawerMessages(flattenMessages(messageConfiguration));
+        validator.accept(nextSettings);
+        this.snapshot = new Snapshot(nextSettings, nextMessages);
     }
 
     public DrawerSettings settings() {
-        return requireLoaded(settings, "settings");
+        return requireLoaded(snapshot, "settings").settings();
     }
 
     static DrawerSettings.Interaction parseInteraction(final ConfigurationSection configuration) {
@@ -164,7 +174,7 @@ public final class DrawerConfigurationService {
     }
 
     public DrawerMessages messages() {
-        return requireLoaded(messages, "messages");
+        return requireLoaded(snapshot, "messages").messages();
     }
 
     public Optional<DrawerTierDefinition> tier(final String id) {

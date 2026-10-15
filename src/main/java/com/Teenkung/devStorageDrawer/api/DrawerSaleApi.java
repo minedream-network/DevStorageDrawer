@@ -14,7 +14,7 @@ import org.bukkit.Location;
  * Unknown payment outcomes retain durable evidence; never retry a debit automatically.
  */
 public interface DrawerSaleApi {
-    String VERSION = "1.0.0";
+    String VERSION = "1.1.0";
 
     default String apiVersion() {
         return VERSION;
@@ -24,11 +24,13 @@ public interface DrawerSaleApi {
     Probe probeSaleTarget(Player player, Block block, BlockFace face);
 
     /**
-     * Rechecks the item and available quoted stock, journals the debit, and invokes payment synchronously.
+     * Rechecks the actor's permission, clicked face, protection decision, item, and available
+     * quoted stock, then journals the debit and invokes payment synchronously.
      * Additional matching items may arrive after the probe; they remain in the drawer. The
      * callback receives at most min(maxAmount, expectedStock.amount()), never the new arrivals.
      * A lower total or changed item rejects the quote before invoking payment.
-     * The caller must already own this region and have a durable audit for operationId.
+     * The caller must already own both the block and actor regions and have a durable audit
+     * for operationId. A probe without its original actor/face cannot authorize a sale.
      * REJECTED restores stock before returning; UNKNOWN retains the journal for manual recovery.
      * Never retry an uncertain operation or schedule payment outside this callback.
      */
@@ -43,7 +45,12 @@ public interface DrawerSaleApi {
 
     enum Status { NOT_DRAWER, DENIED, EMPTY, READY, UNAVAILABLE }
 
-    record Probe(Status status, ItemStack template, long amount) {
+    record Probe(Status status, ItemStack template, long amount, Player actor, BlockFace clickedFace) {
+        /** Source-compatible constructor for non-authorizing status/stock snapshots. */
+        public Probe(Status status, ItemStack template, long amount) {
+            this(status, template, amount, null, null);
+        }
+
         public Probe {
             status = Objects.requireNonNull(status, "status");
             template = template == null ? null : template.clone();

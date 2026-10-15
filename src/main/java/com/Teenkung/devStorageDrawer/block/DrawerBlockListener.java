@@ -88,7 +88,11 @@ public final class DrawerBlockListener implements Listener {
         this.hoppers.watch(barrel);
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    // A confirmed break performs its own durable drop transaction. Inspect the final
+    // protection decision before cancelling vanilla destruction and starting that work.
+    // Cancelling at HIGHEST would hide this event from later HIGHEST protection listeners
+    // registered with ignoreCancelled=true.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBreak(final BlockBreakEvent event) {
         final Barrel barrel = this.context.blocks().barrel(event.getBlock()).orElse(null);
         if (barrel == null || !this.context.repository().isDrawer(barrel)) {

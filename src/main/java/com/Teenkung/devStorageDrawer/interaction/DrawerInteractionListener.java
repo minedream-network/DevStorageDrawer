@@ -6,6 +6,9 @@ import com.teenkung.devstoragedrawer.block.DrawerRuntime;
 import com.teenkung.devstoragedrawer.block.DrawerRuntimeContext;
 import com.teenkung.devstoragedrawer.config.DrawerTierDefinition;
 import com.teenkung.devstoragedrawer.domain.DrawerInvariantViolationException;
+import com.teenkung.devstoragedrawer.domain.DrawerJournalKind;
+import com.teenkung.devstoragedrawer.domain.DrawerJournalPhase;
+import com.teenkung.devstoragedrawer.domain.DrawerProxyJournal;
 import com.teenkung.devstoragedrawer.domain.DrawerState;
 import com.teenkung.devstoragedrawer.domain.DrawerStorageTransaction;
 import com.teenkung.devstoragedrawer.hopper.DrawerHopperBridge;
@@ -298,8 +301,9 @@ public final class DrawerInteractionListener implements Listener {
             messageInvalidDrawer(player, barrel);
             return;
         }
+        final DrawerState originalState = state;
         if (!state.hasTemplate()) {
-            state = state.initializeCapacityForFirstItem(tier.tier(), held);
+            state = state.initializeCapacityForFirstItem(tier.tier(), held).withTemplate(held);
         }
         final DrawerStorageTransaction transaction = this.context.storage().deposit(
                 state, physicalCount, held, held.getAmount()
@@ -308,17 +312,12 @@ public final class DrawerInteractionListener implements Listener {
             reportRejected(player, transaction);
             return;
         }
-        // Drawers intentionally consume creative items too; this is a storage action, not a preview.
-        consumeHeld(player, hand, (int) transaction.acceptedAmount());
-        if (!this.context.repository().save(barrel, transaction.stateAfter())) {
-            restoreHeld(player, hand, held, (int) transaction.acceptedAmount());
-            message(player, "general.configuration-error");
+        final ItemStack originalHeld = held.clone();
+        if (!commitPlayerDeposit(player, barrel, originalState, state, transaction.stateAfter(), physicalCount,
+                () -> consumeHeld(player, hand, (int) transaction.acceptedAmount()),
+                () -> setHeld(player, hand, originalHeld.clone()))) {
             return;
         }
-        this.context.notifyCommitted(
-                barrel, transaction.stateAfter(), transaction.physicalAfter(), DrawerChangeCause.PLAYER_DEPOSIT
-        );
-        this.hoppers.queueRebalance(barrel);
         message(player, "drawer.deposited", Map.of("amount", transaction.acceptedAmount()));
         armBulkDeposit(player, barrel, transaction.stateAfter());
     }
@@ -334,6 +333,7 @@ public final class DrawerInteractionListener implements Listener {
             message(player, "drawer.no-matching-items");
             return;
         }
+        final DrawerState originalState = state;
         long acceptedTotal = 0L;
         final ItemStack template = state.requireTemplate();
         final PlayerInventory inventory = player.getInventory();
@@ -374,19 +374,118 @@ public final class DrawerInteractionListener implements Listener {
             }
             originals.put(removal.getKey(), candidate.clone());
         }
-        for (final Map.Entry<Integer, Integer> removal : removals.entrySet()) {
-            final ItemStack candidate = inventory.getItem(removal.getKey());
-            candidate.setAmount(candidate.getAmount() - removal.getValue());
-            inventory.setItem(removal.getKey(), candidate.getAmount() <= 0 ? null : candidate);
-        }
-        if (!this.context.repository().save(barrel, state)) {
-            restoreInventorySlots(inventory, originals);
-            message(player, "general.configuration-error");
+        final DrawerState after = state;
+        if (!commitPlayerDeposit(player, barrel, originalState, originalState, after, physicalCount,
+                () -> {
+                    for (final Map.Entry<Integer, Integer> removal : removals.entrySet()) {
+                        final ItemStack candidate = inventory.getItem(removal.getKey());
+                        candidate.setAmount(candidate.getAmount() - removal.getValue());
+                        inventory.setItem(removal.getKey(), candidate.getAmount() <= 0 ? null : candidate);
+                    }
+                },
+                () -> restoreInventorySlots(inventory, originals))) {
             return;
         }
-        this.context.notifyCommitted(barrel, state, physicalCount, DrawerChangeCause.PLAYER_DEPOSIT);
-        this.hoppers.queueRebalance(barrel);
         message(player, "drawer.deposited", Map.of("amount", acceptedTotal, "item", template.getType().translationKey()));
+    }
+
+    /** Records the cross-playerdata/chunk transfer before touching either inventory. */
+    private boolean commitPlayerDeposit(final Player player, final Barrel barrel, final DrawerState original,
+            final DrawerState prepared, final DrawerState after, final long physicalCount,
+            final Runnable consume, final Runnable restore) {
+        final DrawerProxyJournal journal = new DrawerProxyJournal(
+                UUID.randomUUID(), DrawerJournalKind.GUARDED_PLAYER_DEPOSIT, DrawerJournalPhase.PREPARED,
+                player.getUniqueId(), prepared.totalForPhysical(physicalCount), after.totalForPhysical(physicalCount),
+                physicalCount, physicalCount, System.currentTimeMillis());
+        final DrawerState intent = prepared.migrateToReservedMirror(physicalCount).withProxyJournal(journal);
+        try {
+            if (!this.context.repository().save(barrel, intent)) {
+                message(player, "general.configuration-error");
+                return false;
+            }
+        } catch (final RuntimeException exception) {
+            context.logger().severe("Could not prepare quick-deposit " + journal.operationId()
+                    + " at " + barrel.getLocation() + ": " + exception.getMessage());
+            message(player, "general.configuration-error");
+            return false;
+        }
+        boolean consumed = false;
+        boolean credited = false;
+        try {
+            consumed = true;
+            consume.run();
+            if (!this.context.repository().save(barrel, after.migrateToReservedMirror(physicalCount)
+                    .withProxyJournal(journal.withPhase(DrawerJournalPhase.APPLIED)))) {
+                throw new IllegalStateException("Could not persist quick-deposit credit");
+            }
+            credited = true;
+            // The debit is saved with the player's inventory before the drawer intent is released.
+            player.saveData();
+            if (!this.context.repository().save(barrel, after.migrateToReservedMirror(physicalCount))) {
+                throw new IllegalStateException("Could not release quick-deposit intent");
+            }
+        } catch (final RuntimeException exception) {
+            if (!credited) {
+                final DrawerJournalPhase observed = depositPhase(barrel, journal.operationId());
+                if (observed == DrawerJournalPhase.PREPARED) {
+                    if (consumed) {
+                        try {
+                            restore.run();
+                        } catch (final RuntimeException restoreFailure) {
+                            context.logger().severe("Quick-deposit " + journal.operationId()
+                                    + " could not restore player inventory: " + restoreFailure.getMessage());
+                            message(player, "general.configuration-error");
+                            return false;
+                        }
+                    }
+                    try {
+                        if (!this.context.repository().save(barrel, original)) {
+                            context.logger().severe("Quick-deposit " + journal.operationId()
+                                    + " could not clear its prepared drawer intent at " + barrel.getLocation());
+                        }
+                    } catch (final RuntimeException rollbackFailure) {
+                        context.logger().severe("Quick-deposit " + journal.operationId()
+                                + " could not clear its prepared drawer intent at " + barrel.getLocation()
+                                + ": " + rollbackFailure.getMessage());
+                    }
+                } else {
+                    context.logger().severe("Quarantined uncertain quick-deposit " + journal.operationId()
+                            + " at " + barrel.getLocation() + " after credit attempt: " + exception.getMessage());
+                }
+            } else {
+                // A saveData exception may happen after playerdata was written. Never restore an
+                // already-credited transfer; keep its operation id for manual reconciliation.
+                context.logger().severe("Quarantined credited quick-deposit " + journal.operationId()
+                        + " at " + barrel.getLocation() + ": " + exception.getMessage());
+            }
+            message(player, "general.configuration-error");
+            return false;
+        }
+        try {
+            this.context.notifyCommitted(barrel, after, physicalCount, DrawerChangeCause.PLAYER_DEPOSIT);
+            this.hoppers.queueRebalance(barrel);
+        } catch (final RuntimeException exception) {
+            context.logger().warning("Quick-deposit " + journal.operationId()
+                    + " committed but refresh failed: " + exception.getMessage());
+        }
+        return true;
+    }
+
+    private DrawerJournalPhase depositPhase(final Barrel barrel, final UUID operationId) {
+        try {
+            final Barrel current = this.context.blocks().barrel(barrel.getBlock()).orElse(null);
+            if (current == null) return null;
+            final DrawerStateReadResult read = this.context.repository().read(current);
+            if (read instanceof DrawerStateReadResult.Valid valid) {
+                return valid.state().proxyJournal()
+                        .filter(pending -> pending.operationId().equals(operationId)
+                                && pending.kind() == DrawerJournalKind.GUARDED_PLAYER_DEPOSIT)
+                        .map(DrawerProxyJournal::phase).orElse(null);
+            }
+        } catch (final RuntimeException ignored) {
+            // An unreadable drawer cannot prove that returning the player's items is safe.
+        }
+        return null;
     }
 
     private void withdraw(final Player player, final Barrel barrel, final boolean bulk) {
@@ -579,18 +678,11 @@ public final class DrawerInteractionListener implements Listener {
         }
     }
 
-    private static void restoreHeld(final Player player, final EquipmentSlot hand, final ItemStack original, final int amount) {
-        final ItemStack current = heldItem(player, hand);
-        if (current == null || current.getType() == Material.AIR) {
-            final ItemStack replacement = original.clone();
-            replacement.setAmount(amount);
-            if (hand == EquipmentSlot.OFF_HAND) {
-                player.getInventory().setItemInOffHand(replacement);
-            } else {
-                player.getInventory().setItemInMainHand(replacement);
-            }
+    private static void setHeld(final Player player, final EquipmentSlot hand, final ItemStack original) {
+        if (hand == EquipmentSlot.OFF_HAND) {
+            player.getInventory().setItemInOffHand(original);
         } else {
-            current.setAmount(current.getAmount() + amount);
+            player.getInventory().setItemInMainHand(original);
         }
     }
 

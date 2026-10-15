@@ -13,6 +13,9 @@ import org.bukkit.inventory.ItemStack;
  */
 public interface DevStorageDrawerApi {
 
+    /** Maximum number of native-sized item stacks returned by one withdrawal. */
+    int MAX_WITHDRAWAL_RESULT_STACKS = 256;
+
     /** Semantic version of this public API contract. */
     String VERSION = "1.0.0";
 
@@ -45,7 +48,10 @@ public interface DevStorageDrawerApi {
      * <p>The drawer-side removal is journaled and committed before the result completes. A caller
      * must first create its own durable operation or escrow record. If it cannot consume the
      * returned items, it must compensate with a deposit; arbitrary plugins cannot participate in
-     * one atomic commit with another plugin's data store.</p>
+     * one atomic commit with another plugin's data store. A call whose available stock and
+     * requested amount would produce more than {@link #MAX_WITHDRAWAL_RESULT_STACKS} native-sized
+     * stacks returns {@code INVALID_REQUEST} before any debit. Split larger withdrawals into
+     * bounded calls.</p>
      */
     CompletableFuture<DrawerTransferResult> withdraw(
             DrawerLocation location,

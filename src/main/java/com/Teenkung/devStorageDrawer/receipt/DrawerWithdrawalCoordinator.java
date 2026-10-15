@@ -51,6 +51,13 @@ public final class DrawerWithdrawalCoordinator implements Listener {
     private final DrawerRuntimeContext context;
     private final WithdrawalReceiptStore store;
     private final Set<UUID> inFlightOperations = ConcurrentHashMap.newKeySet();
+    /**
+     * Process-local proof that this exact operation cleared its fully applied drawer journal.
+     * A DELIVERABLE ledger record is written before that clear, so it is not sufficient proof by
+     * itself after a restart. A persisted player claim marker is the only restart-safe substitute.
+     */
+    private final Set<UUID> verifiedForDelivery = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> uncertainPlayerSaves = ConcurrentHashMap.newKeySet();
     private Consumer<Barrel> rebalanceRequester = barrel -> { };
     private boolean requesterConfigured;
 
@@ -140,8 +147,9 @@ public final class DrawerWithdrawalCoordinator implements Listener {
             return;
         }
         final DrawerJournalReconciliation reconciliation = context.storage().reconcile(state, observedPhysical);
-        if (reconciliation.requiresManualRecovery()) {
-            context.logger().warning("Quarantined invalid withdrawal journal " + journal.operationId()
+        if (reconciliation.requiresManualRecovery()
+                || reconciliation.resolution() == DrawerJournalReconciliation.Resolution.PARTIALLY_APPLIED) {
+            context.logger().warning("Quarantined unresolved withdrawal journal " + journal.operationId()
                     + " at " + barrel.getLocation());
             return;
         }
@@ -159,19 +167,34 @@ public final class DrawerWithdrawalCoordinator implements Listener {
                     + " delivery must be verified before manual recovery");
             return;
         }
-        if (!receipt.ownerId().equals(journal.ownerId())) {
+        if (!receiptMatchesJournal(receipt, journal, barrel.getLocation())) {
             context.logger().severe("Quarantined committed withdrawal " + journal.operationId()
-                    + " because its durable receipt is missing or has the wrong owner");
+                    + " because its durable receipt does not match the drawer journal or location");
             return;
         }
         persistCommit(barrel.getLocation(), journal, resume);
+    }
+
+    private static boolean receiptMatchesJournal(
+            final WithdrawalReceipt receipt,
+            final DrawerProxyJournal journal,
+            final Location location
+    ) {
+        return receipt.ownerId().equals(journal.ownerId())
+                && journal.totalBefore() > journal.totalAfter()
+                && receipt.count() == journal.totalBefore() - journal.totalAfter()
+                && receipt.createdAtEpochMillis() == journal.createdAtEpochMillis()
+                && location.getWorld() != null
+                && receipt.worldId().equals(location.getWorld().getUID())
+                && receipt.blockX() == location.getBlockX()
+                && receipt.blockY() == location.getBlockY()
+                && receipt.blockZ() == location.getBlockZ();
     }
 
     @EventHandler
     public void onPlayerJoin(final PlayerJoinEvent event) {
         final Player player = event.getPlayer();
         recoverPreparedFor(player);
-        attemptDelivery(player);
     }
 
     private void applyPrepared(
@@ -225,7 +248,6 @@ public final class DrawerWithdrawalCoordinator implements Listener {
             if (live != null) {
                 rebalanceRequester.accept(live);
             }
-            attemptDelivery(player);
         });
     }
 
@@ -253,18 +275,20 @@ public final class DrawerWithdrawalCoordinator implements Listener {
                         }
                         final DrawerJournalReconciliation fresh = context.storage().reconcile(valid.state(), stock.count());
                         if (fresh.requiresManualRecovery()
-                                || fresh.resolution() == DrawerJournalReconciliation.Resolution.ROLLED_BACK) {
+                                || fresh.resolution() == DrawerJournalReconciliation.Resolution.ROLLED_BACK
+                                || fresh.resolution() == DrawerJournalReconciliation.Resolution.PARTIALLY_APPLIED) {
                             context.logger().severe("Withdrawal " + journal.operationId()
                                     + " became inconsistent after its receipt was made deliverable");
                             return;
                         }
                         final DrawerState resolved = fresh.state();
                         if (context.repository().save(barrel, resolved)) {
+                            verifiedForDelivery.add(journal.operationId());
                             context.notifyCommitted(barrel, resolved, stock.count(), DrawerChangeCause.PLAYER_WITHDRAW);
                             resume.run();
                             final Player owner = Bukkit.getPlayer(journal.ownerId());
                             if (owner != null) {
-                                attemptDelivery(owner);
+                                attemptDelivery(owner, journal.operationId());
                             }
                         }
                     } finally {
@@ -343,7 +367,8 @@ public final class DrawerWithdrawalCoordinator implements Listener {
 
     private void recoverPreparedFor(final Player player) {
         for (final WithdrawalReceipt receipt : store.forOwner(player.getUniqueId())) {
-            if (receipt.status() != WithdrawalReceiptStatus.PREPARED) {
+            if (receipt.status() != WithdrawalReceiptStatus.PREPARED
+                    && receipt.status() != WithdrawalReceiptStatus.DELIVERABLE) {
                 continue;
             }
             final World world = Bukkit.getWorld(receipt.worldId());
@@ -352,14 +377,33 @@ public final class DrawerWithdrawalCoordinator implements Listener {
             }
             final Location location = new Location(world, receipt.blockX(), receipt.blockY(), receipt.blockZ());
             context.execution().executeAt(location, () -> {
-                final Barrel barrel = liveJournaledBarrel(location, receipt.operationId());
-                if (barrel == null) {
-                    context.logger().severe("Kept prepared withdrawal receipt " + receipt.operationId()
-                            + " because its journaled drawer is unavailable; run /drawers repair after restoring the block");
+                final Barrel barrel = context.blocks().barrel(location.getBlock()).orElse(null);
+                if (barrel == null || !context.repository().isDrawer(barrel)) {
+                    context.logger().severe("Kept withdrawal receipt " + receipt.operationId()
+                            + " because its drawer is unavailable; run /drawers repair after restoring the block");
                     return;
                 }
                 final DrawerStateReadResult read = context.repository().read(barrel);
                 if (!(read instanceof DrawerStateReadResult.Valid valid)) {
+                    return;
+                }
+                final DrawerProxyJournal journal = valid.state().proxyJournal().orElse(null);
+                if (journal == null) {
+                    if (receipt.status() == WithdrawalReceiptStatus.DELIVERABLE) {
+                        // DELIVERABLE is persisted before the journal is cleared. After a restart,
+                        // a journal-free chunk can be either the committed state or an older
+                        // pre-debit snapshot. Only a persisted player claim may finish it safely.
+                        attemptDelivery(player, receipt.operationId());
+                    } else {
+                        context.logger().severe("Kept prepared withdrawal receipt " + receipt.operationId()
+                                + " because its drawer journal is missing");
+                    }
+                    return;
+                }
+                if (journal.kind() != DrawerJournalKind.PLAYER_WITHDRAWAL
+                        || !journal.operationId().equals(receipt.operationId())) {
+                    context.logger().severe("Kept withdrawal receipt " + receipt.operationId()
+                            + " because the drawer has a different pending journal");
                     return;
                 }
                 final DrawerBlockAccess.PhysicalStock stock = context.blocks().inspect(barrel, valid.state());
@@ -368,16 +412,22 @@ public final class DrawerWithdrawalCoordinator implements Listener {
         }
     }
 
-    private void attemptDelivery(final Player player) {
-        context.execution().runOnEntity(player, task -> deliverOnEntityThread(player), () -> { });
-    }
-
-    private void deliverOnEntityThread(final Player player) {
-        if (!player.isOnline()) {
+    private void attemptDelivery(final Player player, final UUID operationId) {
+        if (uncertainPlayerSaves.contains(operationId)) {
             return;
         }
+        context.execution().runOnEntity(player,
+                task -> deliverOnEntityThread(player, operationId), () -> { });
+    }
+
+    private void deliverOnEntityThread(final Player player, final UUID operationId) {
+        if (!player.isOnline() || uncertainPlayerSaves.contains(operationId)) {
+            return;
+        }
+        final boolean mayIssueItems = verifiedForDelivery.contains(operationId);
         final List<WithdrawalReceipt> deliverable = store.forOwner(player.getUniqueId()).stream()
-                .filter(receipt -> receipt.status() == WithdrawalReceiptStatus.DELIVERABLE)
+                .filter(receipt -> receipt.status() == WithdrawalReceiptStatus.DELIVERABLE
+                        && receipt.operationId().equals(operationId))
                 .toList();
         if (deliverable.isEmpty()) {
             return;
@@ -386,13 +436,23 @@ public final class DrawerWithdrawalCoordinator implements Listener {
         final PersistentDataContainer pdc = player.getPersistentDataContainer();
         final String claimedBefore = pdc.get(CLAIMED_RECEIPTS, PersistentDataType.STRING);
         final Set<UUID> claimed = parseClaimed(claimedBefore);
-        final ItemStack[] inventoryBefore = cloneContents(player.getInventory().getStorageContents());
+        final ItemStack[] inventoryBefore = mayIssueItems
+                ? cloneContents(player.getInventory().getStorageContents()) : null;
         final List<UUID> acknowledgements = new ArrayList<>();
         long deliveredCount = 0L;
+        boolean quarantinedForMissingProof = false;
+        boolean startedSave = false;
         try {
             for (final WithdrawalReceipt receipt : deliverable) {
                 if (claimed.contains(receipt.operationId())) {
                     acknowledgements.add(receipt.operationId());
+                    continue;
+                }
+                if (!mayIssueItems) {
+                    quarantinedForMissingProof = true;
+                    context.logger().severe("Quarantined deliverable withdrawal " + operationId + " for "
+                            + player.getName() + " because neither a cleared journal in this server process nor a"
+                            + " persisted player claim proves that issuing the items is safe");
                     continue;
                 }
                 final ItemStack template = ItemStack.deserializeBytes(receipt.templateBytes());
@@ -406,17 +466,28 @@ public final class DrawerWithdrawalCoordinator implements Listener {
                 deliveredCount += receipt.count();
             }
             if (acknowledgements.isEmpty()) {
-                message(player, "drawer.withdrawal-pending", Map.of());
+                if (!quarantinedForMissingProof) {
+                    message(player, "drawer.withdrawal-pending", Map.of());
+                }
                 return;
             }
             writeClaimed(pdc, claimed);
             // Inventory and the idempotency marker are persisted in the same playerdata save.
+            startedSave = true;
             player.saveData();
         } catch (final RuntimeException exception) {
-            player.getInventory().setStorageContents(inventoryBefore);
-            restoreClaimed(pdc, claimedBefore);
-            context.logger().severe("Could not deliver withdrawal receipts to " + player.getName()
-                    + ": " + exception.getMessage());
+            if (startedSave) {
+                uncertainPlayerSaves.add(operationId);
+                context.logger().severe("Quarantined withdrawal " + operationId + " for " + player.getName()
+                        + " after an uncertain playerdata save: " + exception.getMessage());
+            } else {
+                if (inventoryBefore != null) {
+                    player.getInventory().setStorageContents(inventoryBefore);
+                }
+                restoreClaimed(pdc, claimedBefore);
+                context.logger().severe("Could not deliver withdrawal receipts to " + player.getName()
+                        + ": " + exception.getMessage());
+            }
             return;
         }
 
@@ -424,6 +495,7 @@ public final class DrawerWithdrawalCoordinator implements Listener {
         context.execution().runAsync(task -> {
             try {
                 store.completeAll(acknowledgements);
+                verifiedForDelivery.removeAll(acknowledgements);
                 context.execution().runOnEntity(player, ignored -> {
                     final Set<UUID> remainingClaims = parseClaimed(
                             player.getPersistentDataContainer().get(CLAIMED_RECEIPTS, PersistentDataType.STRING)

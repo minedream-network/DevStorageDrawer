@@ -162,7 +162,9 @@ class DrawerChestInventoryTest {
             final ItemStack item = mock(ItemStack.class);
             final AtomicInteger amount = new AtomicInteger(initial);
             identities.put(item, identity);
-            when(item.getType()).thenReturn(mock(Material.class));
+            final Material material = mock(Material.class);
+            when(material.translationKey()).thenReturn(identity);
+            when(item.getType()).thenReturn(material);
             when(item.getAmount()).thenAnswer(call -> amount.get());
             when(item.getMaxStackSize()).thenReturn(stackSize);
             when(item.isSimilar(any())).thenAnswer(call -> identity.equals(identities.get(call.getArgument(0))));
@@ -236,6 +238,127 @@ class DrawerChestInventoryTest {
             assertEquals(1000, f.total());
             verify(f.repository, never()).save(any(), any());
         }
+    }
+
+    @Test void quickDepositJournalsBeforeConsumingAndSavesPlayerBeforeReleasingIntent() {
+        try (Fixture f = new Fixture(1000, 64, 10000)) {
+            final ItemStack held = f.item("stone", 20, 64);
+            when(f.bottom.getItemInMainHand()).thenReturn(held);
+            when(f.player.isSneaking()).thenReturn(true);
+            when(f.context.tier("tier")).thenReturn(Optional.of(mock(DrawerTierDefinition.class)));
+            final var listener = new DrawerInteractionListener(f.context, f.hoppers,
+                    mock(DrawerWithdrawalCoordinator.class), DrawerRuntime.DrawerDisplayTargetResolver.none(), f.protection);
+            listener.onPlayerInteract(rightClick(f));
+
+            final var states = org.mockito.ArgumentCaptor.forClass(DrawerState.class);
+            verify(f.repository, times(3)).save(eq(f.barrel), states.capture());
+            assertEquals(DrawerJournalKind.GUARDED_PLAYER_DEPOSIT,
+                    states.getAllValues().get(0).proxyJournal().orElseThrow().kind());
+            assertEquals(DrawerJournalPhase.PREPARED,
+                    states.getAllValues().get(0).proxyJournal().orElseThrow().phase());
+            assertEquals(DrawerJournalPhase.APPLIED,
+                    states.getAllValues().get(1).proxyJournal().orElseThrow().phase());
+            assertTrue(states.getAllValues().get(2).proxyJournal().isEmpty());
+            assertEquals(1020, f.total());
+            verify(f.player).saveData();
+        }
+    }
+
+    @Test void failedQuickDepositCreditRestoresPlayerAndOriginalDrawer() {
+        try (Fixture f = new Fixture(1000, 64, 10000)) {
+            final ItemStack held = f.item("stone", 20, 64);
+            when(f.bottom.getItemInMainHand()).thenReturn(held);
+            when(f.player.isSneaking()).thenReturn(true);
+            when(f.context.tier("tier")).thenReturn(Optional.of(mock(DrawerTierDefinition.class)));
+            final AtomicInteger writes = new AtomicInteger();
+            when(f.repository.save(eq(f.barrel), any())).thenAnswer(call -> {
+                if (writes.incrementAndGet() == 2) return false;
+                f.state.set(call.getArgument(1));
+                return true;
+            });
+            final var listener = new DrawerInteractionListener(f.context, f.hoppers,
+                    mock(DrawerWithdrawalCoordinator.class), DrawerRuntime.DrawerDisplayTargetResolver.none(), f.protection);
+            listener.onPlayerInteract(rightClick(f));
+
+            assertEquals(1000, f.total());
+            assertTrue(f.state.get().proxyJournal().isEmpty());
+            verify(f.bottom).setItemInMainHand(argThat(item -> item != null && item.getAmount() == 20));
+            verify(f.player, never()).saveData();
+        }
+    }
+
+    @Test void matchingInventoryQuickDepositUsesOneJournalForAllSlots() {
+        try (Fixture f = new Fixture(1000, 64, 10000)) {
+            f.playerSlots[0] = f.item("stone", 12, 64);
+            f.playerSlots[1] = f.item("stone", 17, 64);
+            when(f.player.isSneaking()).thenReturn(true);
+            final var listener = new DrawerInteractionListener(f.context, f.hoppers,
+                    mock(DrawerWithdrawalCoordinator.class), DrawerRuntime.DrawerDisplayTargetResolver.none(), f.protection);
+            listener.onPlayerInteract(rightClick(f));
+
+            final var states = org.mockito.ArgumentCaptor.forClass(DrawerState.class);
+            verify(f.repository, times(3)).save(eq(f.barrel), states.capture());
+            assertEquals(1029, f.total());
+            assertEquals(DrawerJournalKind.GUARDED_PLAYER_DEPOSIT,
+                    states.getAllValues().get(0).proxyJournal().orElseThrow().kind());
+            assertEquals(1000, states.getAllValues().get(0).storedTotal());
+            assertEquals(1029, states.getAllValues().get(1).storedTotal());
+            assertNull(f.playerSlots[0]);
+            assertNull(f.playerSlots[1]);
+            verify(f.player).saveData();
+        }
+    }
+
+    @Test void ambiguousPlayerSaveKeepsCreditedDepositQuarantined() {
+        try (Fixture f = new Fixture(1000, 64, 10000)) {
+            final ItemStack held = f.item("stone", 20, 64);
+            when(f.bottom.getItemInMainHand()).thenReturn(held);
+            when(f.player.isSneaking()).thenReturn(true);
+            when(f.context.tier("tier")).thenReturn(Optional.of(mock(DrawerTierDefinition.class)));
+            doThrow(new IllegalStateException("uncertain player save")).when(f.player).saveData();
+            final var listener = new DrawerInteractionListener(f.context, f.hoppers,
+                    mock(DrawerWithdrawalCoordinator.class), DrawerRuntime.DrawerDisplayTargetResolver.none(), f.protection);
+            listener.onPlayerInteract(rightClick(f));
+
+            assertEquals(1020, f.state.get().storedTotal());
+            assertEquals(DrawerJournalPhase.APPLIED, f.state.get().proxyJournal().orElseThrow().phase());
+            assertEquals(DrawerJournalReconciliation.Resolution.PLAYER_TRANSFER_UNRESOLVED,
+                    f.storage.reconcile(f.state.get(), 64).resolution());
+            verify(f.bottom).setItemInMainHand(isNull());
+        }
+    }
+
+    @Test void thrownCreditWriteAfterMutationDoesNotRestorePlayerItems() {
+        try (Fixture f = new Fixture(1000, 64, 10000)) {
+            final ItemStack held = f.item("stone", 20, 64);
+            when(f.bottom.getItemInMainHand()).thenReturn(held);
+            when(f.player.isSneaking()).thenReturn(true);
+            when(f.context.tier("tier")).thenReturn(Optional.of(mock(DrawerTierDefinition.class)));
+            final AtomicInteger writes = new AtomicInteger();
+            when(f.repository.save(eq(f.barrel), any())).thenAnswer(call -> {
+                f.state.set(call.getArgument(1));
+                if (writes.incrementAndGet() == 2) throw new IllegalStateException("write outcome unknown");
+                return true;
+            });
+            final var listener = new DrawerInteractionListener(f.context, f.hoppers,
+                    mock(DrawerWithdrawalCoordinator.class), DrawerRuntime.DrawerDisplayTargetResolver.none(), f.protection);
+            listener.onPlayerInteract(rightClick(f));
+
+            assertEquals(1020, f.state.get().storedTotal());
+            assertEquals(DrawerJournalPhase.APPLIED, f.state.get().proxyJournal().orElseThrow().phase());
+            verify(f.repository, times(2)).save(eq(f.barrel), any());
+            verify(f.bottom).setItemInMainHand(isNull());
+            verify(f.player, never()).saveData();
+        }
+    }
+
+    private static PlayerInteractEvent rightClick(final Fixture f) {
+        final PlayerInteractEvent event = mock(PlayerInteractEvent.class);
+        when(event.getPlayer()).thenReturn(f.player);
+        when(event.getAction()).thenReturn(Action.RIGHT_CLICK_BLOCK);
+        when(event.getClickedBlock()).thenReturn(f.block);
+        when(event.getHand()).thenReturn(EquipmentSlot.HAND);
+        return event;
     }
 
     @Test void disabledShortcutWithdrawalsDoNotArmAReleasedLeftClick() {

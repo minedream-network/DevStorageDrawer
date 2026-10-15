@@ -65,6 +65,23 @@ class DrawerBedrockConfigurationTest {
         assertEquals(0.4, configuration.settings().bedrock().hologramLineSpacing());
     }
 
+    @Test void rejectedReloadPreservesThePublishedSettingsAndMessages() throws Exception {
+        final var configuration = configuration();
+        configuration.load();
+        final var settings = configuration.settings();
+        final var messages = configuration.messages();
+
+        assertThrows(IllegalArgumentException.class,
+                () -> configuration.load(candidate -> {
+                    assertNotSame(settings, candidate);
+                    throw new IllegalArgumentException("Floodgate required");
+                }));
+
+        assertSame(settings, configuration.settings());
+        assertSame(messages, configuration.messages());
+        assertSame(settings.tiers().get("tier_1"), configuration.tier("tier_1").orElse(null));
+    }
+
     @Test void validatesFiniteAndBoundedHologramPositions() {
         for (final double height : new double[] {Double.NaN, Double.POSITIVE_INFINITY, 0.49, 4.01}) {
             final var error = assertThrows(IllegalArgumentException.class,

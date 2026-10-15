@@ -22,9 +22,12 @@ import com.teenkung.devstoragedrawer.parcel.DrawerParcelService;
 import com.teenkung.devstoragedrawer.persistence.DrawerStateRepository;
 import com.teenkung.devstoragedrawer.receipt.WithdrawalReceiptStore;
 import com.teenkung.devstoragedrawer.scheduler.FoliaExecution;
+import com.teenkung.devstoragedrawer.upgrade.DrawerUpgradeService;
 import java.io.IOException;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import org.bukkit.Material;
 import org.bukkit.block.Barrel;
 import org.bukkit.command.PluginCommand;
@@ -116,8 +119,9 @@ public final class DevStorageDrawer extends JavaPlugin {
         runtime.listeners().forEach(listener -> pluginManager.registerEvents(listener, this));
         pluginManager.registerEvents(visuals, this);
         pluginManager.registerEvents(new DrawerParcelListener(parcels, () -> configuration.messages()), this);
-        registerCommand();
+        registerCommand(execution);
         runtime.repairLoadedDrawers();
+        runtime.verifyLoadedUpgradeOperations();
         getLogger().info("DevStorageDrawer enabled with " + configuration.settings().tiers().size() + " configured tier(s).");
         final String restartAcceptancePhase = System.getProperty(DevStorageDrawerRestartAcceptance.PHASE_PROPERTY, "");
         if (!restartAcceptancePhase.isBlank()) {
@@ -164,14 +168,18 @@ public final class DevStorageDrawer extends JavaPlugin {
         return runtime == null ? null : runtime.sellWandBridge();
     }
 
-    private void registerCommand() {
+    private void registerCommand(final FoliaExecution execution) {
         final PluginCommand command = Objects.requireNonNull(getCommand("drawers"), "drawers command missing from plugin.yml");
         final DrawersCommand executor = new DrawersCommand(configuration, new DrawerAdminFacade() {
             @Override
-            public void reload(final DrawerSettings settings, final DrawerMessages messages) {
+            public void validateReload(final DrawerSettings settings) {
                 if (!validateBedrockRequirement(settings, getServer().getPluginManager())) {
                     throw new IllegalArgumentException("Bedrock renderer requires Floodgate on this Paper server");
                 }
+            }
+
+            @Override
+            public void reload(final DrawerSettings settings, final DrawerMessages messages) {
                 storage.setLogicalComparatorProxy(settings.redstone().logicalComparatorOutput());
                 visuals.reloadSettings(settings);
                 runtime.reloadSettings(settings);
@@ -188,7 +196,22 @@ public final class DevStorageDrawer extends JavaPlugin {
             public void migrateTargetedDrawer(final Player player) {
                 runtime.migrateTargetedDrawer(player);
             }
-        });
+
+            @Override
+            public boolean upgradeLedgerAvailable() {
+                return runtime.upgradeLedgerAvailable();
+            }
+
+            @Override
+            public List<DrawerUpgradeService.PendingUpgrade> pendingUpgradeOperations() {
+                return runtime.pendingUpgradeOperations();
+            }
+
+            @Override
+            public boolean resolveUpgradeOperation(final UUID id, final DrawerUpgradeService.Resolution resolution) {
+                return runtime.resolveUpgradeOperation(id, resolution);
+            }
+        }, execution);
         command.setExecutor(executor);
         command.setTabCompleter(executor);
     }

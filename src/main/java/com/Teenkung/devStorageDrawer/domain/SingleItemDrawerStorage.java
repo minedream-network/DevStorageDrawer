@@ -386,6 +386,7 @@ public final class SingleItemDrawerStorage implements DrawerStorageStrategy {
         if (journal.kind().guardsDelivery()) {
             return new DrawerJournalReconciliation(
                     journal.kind() == DrawerJournalKind.GUARDED_PLAYER_TRANSFER
+                            || journal.kind() == DrawerJournalKind.GUARDED_PLAYER_DEPOSIT
                             ? DrawerJournalReconciliation.Resolution.PLAYER_TRANSFER_UNRESOLVED
                             : DrawerJournalReconciliation.Resolution.EXTERNAL_SALE_UNRESOLVED,
                     state, observedPhysicalProxyCount);

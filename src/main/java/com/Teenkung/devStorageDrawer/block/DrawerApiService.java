@@ -261,6 +261,15 @@ final class DrawerApiService implements DevStorageDrawerApi {
         if (ready.snapshot().isEmpty()) {
             return transfer(DrawerTransferStatus.EMPTY, requestedAmount, ready.snapshot());
         }
+        // The result stores and defensively copies every native stack. Bound that work before
+        // the irreversible drawer debit, even when the requested amount is extremely large.
+        final ItemStack template = ready.snapshot().template().orElseThrow();
+        final long availableAmount = Math.min(requestedAmount, ready.snapshot().storedAmount());
+        final long maximumItems = (long) Math.max(1, template.getMaxStackSize())
+                * DevStorageDrawerApi.MAX_WITHDRAWAL_RESULT_STACKS;
+        if (availableAmount > maximumItems) {
+            return transfer(DrawerTransferStatus.INVALID_REQUEST, requestedAmount, ready.snapshot());
+        }
         final DrawerPreTransactionEvent event = new DrawerPreTransactionEvent(
                 DrawerTransferType.WITHDRAW, ready.snapshot(), null, requestedAmount, operationContext
         );

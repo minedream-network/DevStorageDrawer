@@ -27,12 +27,21 @@ import org.bukkit.World;
 import org.bukkit.block.Barrel;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.inventory.ItemStack;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 
 class DrawerBreakConfirmationTest {
+    @Test void confirmedBreakWaitsForProtectionListeners() throws ReflectiveOperationException {
+        final EventHandler handler = DrawerBlockListener.class
+                .getMethod("onBreak", BlockBreakEvent.class).getAnnotation(EventHandler.class);
+        assertEquals(EventPriority.MONITOR, handler.priority());
+        assertTrue(handler.ignoreCancelled());
+    }
+
     private static final class Fixture implements AutoCloseable {
         final MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class);
         final DrawerRuntimeContext context = mock(DrawerRuntimeContext.class);

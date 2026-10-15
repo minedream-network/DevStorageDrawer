@@ -57,6 +57,7 @@ class DrawerExternalSaleTest {
 
         Fixture(long total, int mirror) {
             bukkit.when(() -> Bukkit.isOwnedByCurrentRegion(any(Location.class))).thenReturn(true);
+            bukkit.when(() -> Bukkit.isOwnedByCurrentRegion(any(org.bukkit.entity.Entity.class))).thenReturn(true);
             when(location.getWorld()).thenReturn(mock(World.class));
             when(location.getBlock()).thenReturn(block);
             when(block.getLocation()).thenReturn(location);
@@ -76,6 +77,7 @@ class DrawerExternalSaleTest {
             when(blocks.isDrawer(block)).thenReturn(true);
             when(repository.isDrawer(barrel)).thenReturn(true);
             when(player.hasPermission("devstoragedrawer.use")).thenReturn(true);
+            when(player.isOnline()).thenReturn(true);
             when(protection.canWithdraw(player, barrel)).thenReturn(true);
             Directional direction = mock(Directional.class);
             when(direction.getFacing()).thenReturn(BlockFace.NORTH);
@@ -244,6 +246,58 @@ class DrawerExternalSaleTest {
             when(f.player.hasPermission(anyString())).thenReturn(true);
             when(f.protection.canWithdraw(f.player, f.barrel)).thenReturn(false);
             assertEquals(DrawerSaleApi.Status.DENIED, f.probe().status());
+        }
+    }
+    @Test void permissionRevokedAfterProbePreventsSale() {
+        try (Fixture f = new Fixture(1000, 64)) {
+            final DrawerSaleApi.Probe expected = f.probe();
+            when(f.player.hasPermission("devstoragedrawer.use")).thenReturn(false);
+            clearInvocations(f.repository, f.blocks);
+            assertEquals(DrawerSaleApi.SaleResult.UNAVAILABLE, f.api.withExternalSale(f.location, expected, 100,
+                    UUID.randomUUID(), (item, count) -> { fail("Revoked sale must not pay"); return null; }));
+            verify(f.repository, never()).read(any());
+            verify(f.repository, never()).save(any(), any());
+            assertEquals(1000, f.total());
+        }
+    }
+    @Test void protectionRevokedAfterProbePreventsSale() {
+        try (Fixture f = new Fixture(1000, 64)) {
+            final DrawerSaleApi.Probe expected = f.probe();
+            when(f.protection.canWithdraw(f.player, f.barrel)).thenReturn(false);
+            clearInvocations(f.repository, f.blocks);
+            assertEquals(DrawerSaleApi.SaleResult.UNAVAILABLE, f.api.withExternalSale(f.location, expected, 100,
+                    UUID.randomUUID(), (item, count) -> { fail("Protected sale must not pay"); return null; }));
+            verify(f.repository, never()).read(any());
+            verify(f.repository, never()).save(any(), any());
+            assertEquals(1000, f.total());
+        }
+    }
+    @Test void stockOnlyQuoteCannotBypassCommitAuthorization() {
+        try (Fixture f = new Fixture(1000, 64)) {
+            final DrawerSaleApi.Probe snapshot = f.probe();
+            final DrawerSaleApi.Probe unauthenticated = new DrawerSaleApi.Probe(
+                    snapshot.status(), snapshot.template(), snapshot.amount());
+            clearInvocations(f.repository, f.blocks);
+            assertEquals(DrawerSaleApi.SaleResult.UNAVAILABLE,
+                    f.api.withExternalSale(f.location, unauthenticated, 100, UUID.randomUUID(),
+                            (item, count) -> { fail("A stock-only quote must not pay"); return null; }));
+            verify(f.repository, never()).read(any());
+            verify(f.repository, never()).save(any(), any());
+            assertEquals(1000, f.total());
+        }
+    }
+    @Test void rotatedDrawerAfterProbePreventsSale() {
+        try (Fixture f = new Fixture(1000, 64)) {
+            final DrawerSaleApi.Probe expected = f.probe();
+            final Directional rotated = mock(Directional.class);
+            when(rotated.getFacing()).thenReturn(BlockFace.SOUTH);
+            when(f.barrel.getBlockData()).thenReturn(rotated);
+            clearInvocations(f.repository, f.blocks);
+            assertEquals(DrawerSaleApi.SaleResult.UNAVAILABLE, f.api.withExternalSale(f.location, expected, 100,
+                    UUID.randomUUID(), (item, count) -> { fail("Rotated drawer must not pay"); return null; }));
+            verify(f.repository, never()).read(any());
+            verify(f.repository, never()).save(any(), any());
+            assertEquals(1000, f.total());
         }
     }
     @Test void wrongRegionDoesNotReadOrDebitStock() {

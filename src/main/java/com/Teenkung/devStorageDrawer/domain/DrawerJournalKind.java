@@ -9,10 +9,13 @@ public enum DrawerJournalKind {
     GUARDED_EXTERNAL_SALE,
     /** A virtual chest debit remains guarded until delivery to the player has completed. */
     GUARDED_PLAYER_TRANSFER,
+    /** A quick deposit changes playerdata and drawer state in separate persistence domains. */
+    GUARDED_PLAYER_DEPOSIT,
     /** Normal item drops are debited in bounded batches while the drawer remains in place. */
     WORLD_DROP;
 
     public boolean guardsDelivery() {
-        return this == GUARDED_EXTERNAL_SALE || this == GUARDED_PLAYER_TRANSFER;
+        return this == GUARDED_EXTERNAL_SALE || this == GUARDED_PLAYER_TRANSFER
+                || this == GUARDED_PLAYER_DEPOSIT;
     }
 }
