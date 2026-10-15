@@ -196,7 +196,11 @@ class DrawerBreakDropsTest {
             assertEquals("drawer", f.identities.get(f.entities.getLast().getItemStack()));
             assertEquals(Material.AIR, f.blockType.get());
             assertFalse(f.drops.isInProgress(f.barrel));
-            f.entities.forEach(entity -> { verify(entity, never()).setOwner(any()); verify(entity, never()).setGlowing(anyBoolean()); });
+            f.entities.forEach(entity -> {
+                verify(entity).setThrower(f.player.getUniqueId());
+                verify(entity, never()).setOwner(any());
+                verify(entity, never()).setGlowing(anyBoolean());
+            });
         }
     }
 

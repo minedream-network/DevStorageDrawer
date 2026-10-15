@@ -27,7 +27,7 @@ Builds use the included Gradle wrapper and target the Paper API as a compile-onl
 - Sell-tool integrations can sell the quoted stock while hoppers keep filling the drawer; newly arrived items remain for the next sale
 - Comparator output based on logical capacity
 - Java ItemDisplay/TextDisplay rendering and two-line holograms above drawers, visible only to Floodgate players
-- Filled drawers drop their contents as normal items in native-sized stacks, including in Creative mode
+- Filled drawers drop their contents as normal items in native-sized stacks, including in Creative mode. Each entity records the breaking player as its native thrower so generic drop-to-inventory interception does not consume the guarded drop before the matching stock debit is saved
 - Destruction confirmation dialog: confirm once to break the drawer immediately; contents drop first, followed by the drawer block. Confirmation rechecks reach, the owning region, drawer/item identity and the normal block-break protection event. Hopper quantity changes keep the confirmation valid; guarded drops debit the latest stock and block further transfers until completion
 - Large breaks drop at most `destroy.stacks-per-tick` stacks per tick (default 16). The barrel retains undelivered stock and pauses transfers until breaking completes. If dropping stops, completed batches remain dropped and the remaining items stay in the barrel
 - Persistent state recovery, repair, explicit capacity migration, and journaled transactions

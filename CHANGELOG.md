@@ -16,6 +16,8 @@ All notable changes to DevStorageDrawer are documented here.
 - Added guarded direct-stack drawer destruction and hardened deposit, withdrawal, sale, and reload paths.
 - Added `interaction.shortcut-deposits-enabled` to disable Shift+right-click quick deposits independently.
 - Added Shift+right-click with an empty hand as a direct shortcut to the Upgrade UI.
+- Marked guarded drawer-break drops with the breaking player as their native thrower so
+  drop-to-inventory listeners leave the transaction-owned item entities in the world.
 
 ## 1.0.1
 

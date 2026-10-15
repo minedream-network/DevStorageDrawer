@@ -116,7 +116,7 @@ final class DrawerBreakDrops {
                 final ItemStack stack = template.clone();
                 final int amount = (int) Math.min((long) stackSize, toSpawn);
                 stack.setAmount(amount);
-                spawn(operation.location(), stack, spawned);
+                spawn(operation, stack, spawned);
                 toSpawn -= amount;
             }
             // Spawn listeners may remove an earlier entity while a later stack is being spawned.
@@ -180,7 +180,7 @@ final class DrawerBreakDrops {
             if (!context.repository().save(barrel, empty.withProxyJournal(journal))) {
                 throw new IllegalStateException("Could not prepare the empty drawer break");
             }
-            spawn(operation.location(), operation.drawerItem(), spawned);
+            spawn(operation, operation.drawerItem(), spawned);
             final Barrel live = current(operation);
             requireJournal(live, journal, DrawerJournalPhase.PREPARED);
             live.getInventory().clear();
@@ -208,11 +208,15 @@ final class DrawerBreakDrops {
         resync(operation);
     }
 
-    private void spawn(final Location blockLocation, final ItemStack stack, final List<Drop> spawned) {
-        final Location location = blockLocation.clone().add(0.5D, 0.5D, 0.5D);
+    private void spawn(final Operation operation, final ItemStack stack, final List<Drop> spawned) {
+        final Location location = operation.location().clone().add(0.5D, 0.5D, 0.5D);
         final Item entity = location.getWorld().dropItem(location, stack.clone(), item -> {
             // Capture the entity before any ItemSpawnEvent listener runs, including listeners that throw.
             spawned.add(new Drop(item, stack.clone()));
+            // Mark this as a native player-thrown item before ItemSpawnEvent. Drop-to-inventory
+            // plugins conventionally leave player-thrown items alone, so Drawer retains full
+            // ownership of its guarded world-drop transaction without a plugin API dependency.
+            item.setThrower(operation.player().getUniqueId());
             item.setPickupDelay(Integer.MAX_VALUE);
         });
         if (entity == null) {
