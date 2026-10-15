@@ -14,7 +14,7 @@ final class DrawerUpgradePayment {
         Objects.requireNonNull(store, "store");
         Objects.requireNonNull(intent, "intent");
         Objects.requireNonNull(commit, "commit");
-        if (intent.status() != UpgradeIntentStore.Status.ATTEMPTED) {
+        if (intent.status() != UpgradeIntentStore.Status.PAYMENT_UNKNOWN) {
             throw new IllegalArgumentException("Upgrade intent must be new");
         }
         if (intent.cost() == 0D) {
@@ -39,7 +39,7 @@ final class DrawerUpgradePayment {
         try {
             charged = economy.withdraw(intent.player(), intent.cost());
         } catch (final RuntimeException exception) {
-            // A provider may throw after debiting. Keep ATTEMPTED for manual reconciliation.
+            // A provider may throw after debiting. Keep PAYMENT_UNKNOWN for reconciliation.
             return Result.UNKNOWN;
         }
         try {
@@ -58,11 +58,10 @@ final class DrawerUpgradePayment {
         }
         try {
             store.transition(intent.id(), UpgradeIntentStore.Status.COMMITTED);
-            // Barrel.update() confirms that the tile state accepted the write, but it does not
-            // prove that the containing chunk has reached stable storage. Leave the operation in
-            // COMMITTED until an operator has verified the saved barrel and resolves the intent.
-            // Advancing to VERIFIED here would reopen the drawer for another paid upgrade during
-            // the exact crash window this ledger is meant to cover.
+            // Both the provider and barrel update returned a confirmed result, so finish the
+            // normal transaction immediately. A crash or I/O failure between COMMITTED and
+            // VERIFIED still leaves the durable COMMITTED record for manual reconciliation.
+            store.transition(intent.id(), UpgradeIntentStore.Status.VERIFIED);
             return Result.SUCCESS;
         } catch (final IOException exception) {
             return Result.UNKNOWN;

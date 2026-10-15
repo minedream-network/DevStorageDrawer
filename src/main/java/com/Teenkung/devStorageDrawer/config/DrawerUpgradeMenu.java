@@ -58,13 +58,15 @@ public record DrawerUpgradeMenu(
                 List.of(new Body("text", "<yellow>{tier} → {next}</yellow><br>{capacity_label}<br>{increase_label}", 340)),
                 List.of(new Button(true, "confirm", "<green>✓ Confirm · {cost}</green>", "", 150, "confirm")),
                 new Button(true, "back", "<gray>← Back</gray>", "", 140, "back"));
-        final BedrockPage bedrockMain = new BedrockPage("✦ Drawer {tier}", "{capacity_label}\n{upgrade_preview}",
-                Map.of("upgrade", new BedrockButton("✦ Upgrade to {next}", "Cost {cost}", "", ""),
-                        "close", new BedrockButton("✕ Close", "", "", "")));
-        final BedrockPage bedrockConfirm = new BedrockPage("✦ Confirm drawer upgrade",
+        final BedrockPage bedrockMain = new BedrockPage("<gold><bold>✦ Drawer {tier}</bold>",
+                "{capacity_label}\n{upgrade_preview}",
+                Map.of("upgrade", new BedrockButton("<green><bold>✦ Upgrade to {next}</bold>",
+                                "<yellow>Cost <gold>{cost}</gold>", "", ""),
+                        "close", new BedrockButton("<red>✕ Close", "", "", "")));
+        final BedrockPage bedrockConfirm = new BedrockPage("<gold><bold>✦ Confirm drawer upgrade</bold>",
                 "{tier} → {next}\n{capacity_label}\n{increase_label}",
-                Map.of("confirm", new BedrockButton("✓ Confirm · {cost}", "", "", ""),
-                        "back", new BedrockButton("← Back", "", "", "")));
+                Map.of("confirm", new BedrockButton("<green><bold>✓ Confirm · {cost}</bold>", "", "", ""),
+                        "back", new BedrockButton("<gray>← Back", "", "", "")));
         return new DrawerUpgradeMenu(main, confirm, "<gold>✦ Maximum tier", "<gold>➜ {next} · {cost}",
                 "<aqua>Capacity <white>{stored}/{capacity}</white>",
                 "<green>New capacity <white>{next_capacity}</white> (+{increase})</green>",

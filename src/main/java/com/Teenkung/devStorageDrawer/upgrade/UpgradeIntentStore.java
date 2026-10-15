@@ -95,7 +95,7 @@ final class UpgradeIntentStore {
 
     synchronized void prepare(final Intent intent) throws IOException {
         Objects.requireNonNull(intent, "intent");
-        if (intent.status() != Status.ATTEMPTED || intents.containsKey(intent.id())
+        if (intent.status() != Status.PAYMENT_UNKNOWN || intents.containsKey(intent.id())
                 || pendingAt(intent.block()).isPresent() || pending().size() >= MAX_RECORDS) {
             throw new IOException("An upgrade transaction is already pending or the ledger is full");
         }
@@ -123,6 +123,18 @@ final class UpgradeIntentStore {
             compactTerminal(updated);
         }
         return updated;
+    }
+
+    synchronized boolean verifyApplied(final UUID id) throws IOException {
+        Intent existing = intents.get(id);
+        if (existing == null || (existing.status() != Status.CHARGED
+                && existing.status() != Status.COMMITTED)) return false;
+        if (existing.status() == Status.CHARGED) {
+            existing = transition(id, Status.COMMITTED);
+        }
+        if (existing.status() != Status.COMMITTED) return false;
+        transition(id, Status.VERIFIED);
+        return true;
     }
 
     private void compactTerminal(final Intent intent) {
@@ -238,13 +250,15 @@ final class UpgradeIntentStore {
     }
 
     enum Status {
-        ATTEMPTED, CHARGED, REJECTED, REFUNDED, COMMITTED, VERIFIED;
+        // Keep PAYMENT_UNKNOWN first: ledger version 1 stores this enum by ordinal, and this is
+        // the clearer name for the former ATTEMPTED state.
+        PAYMENT_UNKNOWN, CHARGED, REJECTED, REFUNDED, COMMITTED, VERIFIED;
 
-        boolean pending() { return this == ATTEMPTED || this == CHARGED || this == COMMITTED; }
+        boolean pending() { return this == PAYMENT_UNKNOWN || this == CHARGED || this == COMMITTED; }
 
         boolean allows(final Status next) {
             return switch (this) {
-                case ATTEMPTED -> next == CHARGED || next == REJECTED || next == REFUNDED;
+                case PAYMENT_UNKNOWN -> next == CHARGED || next == REJECTED || next == REFUNDED;
                 case CHARGED -> next == REFUNDED || next == COMMITTED;
                 case COMMITTED -> next == VERIFIED;
                 default -> false;

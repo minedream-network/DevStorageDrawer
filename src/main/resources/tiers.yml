@@ -1,7 +1,5 @@
 # Add or remove tier entries as needed. Each tier always places a vanilla barrel.
 # Strings use MiniMessage. Omit custom-model-data (or leave it null) for vanilla visuals.
-config-version: 1
-
 tiers:
   tier_1:
     item:

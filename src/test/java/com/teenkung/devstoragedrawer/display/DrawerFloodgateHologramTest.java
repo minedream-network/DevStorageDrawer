@@ -143,7 +143,7 @@ class DrawerFloodgateHologramTest {
             f.render();
             assertEquals(5, f.entities.size());
             assertEquals("Stored sword", f.text(f.name()));
-            assertEquals("1200 / 4096", f.text(f.amount()));
+            assertEquals("1,200 / 4,096", f.text(f.amount()));
             for (final var row : List.of(f.name(), f.amount())) {
                 verify(row, atLeastOnce()).setInvisible(true);
                 verify(row, atLeastOnce()).setMarker(true);
@@ -207,7 +207,7 @@ class DrawerFloodgateHologramTest {
             f.render();
             assertEquals(previous, f.state.get().displayLink());
             assertEquals(5, f.entities.size());
-            assertEquals("1300 / 4096", f.text(f.amount()));
+            assertEquals("1,300 / 4,096", f.text(f.amount()));
         }
     }
 

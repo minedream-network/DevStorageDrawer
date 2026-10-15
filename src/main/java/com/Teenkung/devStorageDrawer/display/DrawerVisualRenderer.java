@@ -1,5 +1,6 @@
 package com.teenkung.devstoragedrawer.display;
 
+import com.teenkung.devstoragedrawer.text.DrawerTextFormat;
 import com.teenkung.devstoragedrawer.bedrock.BedrockPlayerDetector;
 import com.teenkung.devstoragedrawer.config.DrawerSettings;
 import com.teenkung.devstoragedrawer.domain.DrawerDisplayLink;
@@ -517,7 +518,7 @@ public final class DrawerVisualRenderer implements Listener {
     }
 
     private static Component amountText(final long total, final long capacity) {
-        return Component.text(total + " / " + capacity);
+        return Component.text(DrawerTextFormat.number(total) + " / " + DrawerTextFormat.number(capacity));
     }
 
     /** Uses the item translation directly so TextDisplay does not render Paper's bracketed fallback name. */

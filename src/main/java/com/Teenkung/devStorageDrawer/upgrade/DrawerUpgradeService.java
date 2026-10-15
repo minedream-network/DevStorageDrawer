@@ -3,6 +3,7 @@ package com.teenkung.devstoragedrawer.upgrade;
 import com.teenkung.devstoragedrawer.api.DrawerChangeCause;
 import com.teenkung.devstoragedrawer.block.DrawerBlockAccess;
 import com.teenkung.devstoragedrawer.block.DrawerRuntimeContext;
+import com.teenkung.devstoragedrawer.config.DrawerDialogTypeFactory;
 import com.teenkung.devstoragedrawer.config.DrawerMessages;
 import com.teenkung.devstoragedrawer.config.DrawerTierDefinition;
 import com.teenkung.devstoragedrawer.config.DrawerUpgradeMenu;
@@ -16,10 +17,7 @@ import io.papermc.paper.registry.data.dialog.ActionButton;
 import io.papermc.paper.registry.data.dialog.DialogBase;
 import io.papermc.paper.registry.data.dialog.action.DialogAction;
 import io.papermc.paper.registry.data.dialog.body.DialogBody;
-import io.papermc.paper.registry.data.dialog.type.DialogType;
 import java.io.IOException;
-import java.text.DecimalFormat;
-import java.text.DecimalFormatSymbols;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -46,8 +44,6 @@ import org.bukkit.event.world.ChunkLoadEvent;
 /** Player-bound, stale-safe capacity upgrades for placed drawers. */
 public final class DrawerUpgradeService implements Listener {
     private static final PlainTextComponentSerializer PLAIN = PlainTextComponentSerializer.plainText();
-    private static final DecimalFormat MONEY = new DecimalFormat("0.##", DecimalFormatSymbols.getInstance(Locale.US));
-
     private final DrawerRuntimeContext context;
     private final DrawerHopperBridge hoppers;
     private final DrawerWithdrawalProtection protection;
@@ -147,7 +143,7 @@ public final class DrawerUpgradeService implements Listener {
                 base.externalTitle(render(menu, configured.externalTitle(), values, maximum));
             }
             final Dialog dialog = Dialog.create(factory -> factory.empty().base(base.build())
-                    .type(DialogType.multiAction(actions, exit, configured.columns())));
+                    .type(DrawerDialogTypeFactory.actionsOrNotice(actions, exit, configured.columns())));
             player.showDialog(dialog);
             return true;
         } catch (final RuntimeException | LinkageError exception) {
@@ -230,14 +226,14 @@ public final class DrawerUpgradeService implements Listener {
             final UpgradeIntentStore.Intent intent = new UpgradeIntentStore.Intent(token,
                     player.getUniqueId(), intentKey(view.location()), view.current().tier().id(),
                     view.next().tier().id(), view.path().cost(), System.currentTimeMillis(),
-                    UpgradeIntentStore.Status.ATTEMPTED);
+                    UpgradeIntentStore.Status.PAYMENT_UNKNOWN);
             final DrawerUpgradePayment.Result result = DrawerUpgradePayment.execute(
                     economy, intents, intent,
                     () -> context.repository().save(view.barrel(), upgraded)
             );
             final Map<String, Object> messageValues = Map.of(
                     "tier", tierName(view.current()), "next", tierName(view.next()),
-                    "cost", formatMoney(view.path().cost())
+                    "cost", view.path().cost()
             );
             switch (result) {
                 case SUCCESS -> {
@@ -248,16 +244,7 @@ public final class DrawerUpgradeService implements Listener {
                         context.logger().warning("Drawer upgrade saved at " + view.location()
                                 + " but a post-commit refresh failed: " + exception.getMessage());
                     }
-                    if (view.path().cost() > 0D) {
-                        message(player, "upgrade.success-pending-verification", Map.ofEntries(
-                                Map.entry("tier", tierName(view.current())),
-                                Map.entry("next", tierName(view.next())),
-                                Map.entry("cost", formatMoney(view.path().cost())),
-                                Map.entry("operation", token)
-                        ));
-                    } else {
-                        message(player, "upgrade.success", messageValues);
-                    }
+                    message(player, "upgrade.success", messageValues);
                 }
                 case NOT_READY -> message(player, "upgrade.economy-unavailable", messageValues);
                 case INSUFFICIENT -> message(player, "upgrade.insufficient-funds", messageValues);
@@ -348,7 +335,7 @@ public final class DrawerUpgradeService implements Listener {
         return Map.ofEntries(
                 Map.entry("tier", tierName(view.current())),
                 Map.entry("next", maximum ? "Maximum" : tierName(view.next())),
-                Map.entry("cost", maximum ? "-" : formatMoney(view.path().cost())),
+                Map.entry("cost", maximum ? "-" : view.path().cost()),
                 Map.entry("stored", view.total()),
                 Map.entry("capacity", view.state().capacitySnapshot()),
                 Map.entry("next_capacity", view.nextCapacity()),
@@ -375,10 +362,6 @@ public final class DrawerUpgradeService implements Listener {
 
     private static String tierName(final DrawerTierDefinition tier) {
         return PLAIN.serialize(tier.itemName());
-    }
-
-    private static synchronized String formatMoney(final double amount) {
-        return MONEY.format(amount);
     }
 
     private static UpgradeIntentStore.BlockKey intentKey(final Location location) {
@@ -410,16 +393,17 @@ public final class DrawerUpgradeService implements Listener {
         if (existing == null || !existing.status().pending()) return false;
         if (existing.status() == UpgradeIntentStore.Status.COMMITTED
                 && resolution != Resolution.COMMITTED) return false;
-        if (resolution == Resolution.NO_CHARGE && existing.status() != UpgradeIntentStore.Status.ATTEMPTED) {
+        if (resolution == Resolution.NO_CHARGE
+                && existing.status() != UpgradeIntentStore.Status.PAYMENT_UNKNOWN) {
             return false;
         }
         try {
             if (resolution == Resolution.COMMITTED) {
-                // A provider throw can leave ATTEMPTED after charging, and a barrel save can
+                // A provider throw can leave PAYMENT_UNKNOWN after charging, and a barrel save can
                 // leave CHARGED after committing. This command is explicitly for an administrator
                 // who verified both external facts, so advance through the durable audit states.
                 UpgradeIntentStore.Status status = existing.status();
-                if (status == UpgradeIntentStore.Status.ATTEMPTED) {
+                if (status == UpgradeIntentStore.Status.PAYMENT_UNKNOWN) {
                     status = intents.transition(id, UpgradeIntentStore.Status.CHARGED).status();
                 }
                 if (status == UpgradeIntentStore.Status.CHARGED) {
@@ -440,18 +424,29 @@ public final class DrawerUpgradeService implements Listener {
         }
     }
 
-    /** Compare completed paid operations against a loaded barrel before allowing another purchase. */
+    /** Finalize a known charge when the loaded barrel proves that its target tier was applied. */
     public void verifyLoadedBarrel(final Barrel barrel) {
         if (!ledgerReady || barrel == null) return;
         final UpgradeIntentStore.BlockKey key = intentKey(barrel.getLocation());
         for (final UpgradeIntentStore.Intent intent : intents.pending()) {
-            if (!intent.block().equals(key) || intent.status() != UpgradeIntentStore.Status.COMMITTED) continue;
+            if (!intent.block().equals(key) || (intent.status() != UpgradeIntentStore.Status.CHARGED
+                    && intent.status() != UpgradeIntentStore.Status.COMMITTED)) continue;
             final DrawerStateReadResult read = context.repository().read(barrel);
             if (!(read instanceof DrawerStateReadResult.Valid valid)
                     || !valid.state().tierId().equals(intent.toTier())) {
-                context.logger().severe("Paid drawer upgrade " + intent.id() + " was marked committed but its barrel"
-                        + " is missing or has another tier at " + barrel.getLocation()
-                        + "; inspect the economy and barrel before resolving");
+                context.logger().warning("Paid drawer upgrade " + intent.id() + " is " + intent.status()
+                        + " but its loaded barrel does not have target tier " + intent.toTier() + " at "
+                        + barrel.getLocation() + "; inspect it before resolving");
+                continue;
+            }
+            try {
+                if (intents.verifyApplied(intent.id())) {
+                    context.logger().info("Automatically verified paid drawer upgrade " + intent.id()
+                            + " from the loaded barrel at " + barrel.getLocation());
+                }
+            } catch (final IOException exception) {
+                context.logger().severe("Could not finalize paid drawer upgrade " + intent.id()
+                        + " at " + barrel.getLocation() + ": " + exception.getMessage());
             }
         }
     }
@@ -460,7 +455,8 @@ public final class DrawerUpgradeService implements Listener {
     public void verifyLoadedOperations() {
         if (!ledgerReady) return;
         for (final UpgradeIntentStore.Intent intent : intents.pending()) {
-            if (intent.status() != UpgradeIntentStore.Status.COMMITTED) continue;
+            if (intent.status() != UpgradeIntentStore.Status.CHARGED
+                    && intent.status() != UpgradeIntentStore.Status.COMMITTED) continue;
             context.execution().runGlobal(ignored -> {
                 final org.bukkit.World world = Bukkit.getWorld(intent.block().world());
                 if (world == null) return;
@@ -471,7 +467,7 @@ public final class DrawerUpgradeService implements Listener {
                 context.execution().executeAt(location, () -> {
                     final Barrel barrel = context.blocks().barrel(location.getBlock()).orElse(null);
                     if (barrel == null || !context.repository().isDrawer(barrel)) {
-                        context.logger().severe("Committed paid drawer upgrade " + intent.id()
+                        context.logger().severe("Paid drawer upgrade " + intent.id()
                                 + " has no tagged barrel at " + intent.block());
                     } else {
                         verifyLoadedBarrel(barrel);
@@ -495,7 +491,8 @@ public final class DrawerUpgradeService implements Listener {
         if (!ledgerReady) return;
         final Set<UpgradeIntentStore.BlockKey> expected = new HashSet<>();
         for (final UpgradeIntentStore.Intent intent : intents.pending()) {
-            if (intent.status() == UpgradeIntentStore.Status.COMMITTED
+            if ((intent.status() == UpgradeIntentStore.Status.CHARGED
+                    || intent.status() == UpgradeIntentStore.Status.COMMITTED)
                     && intent.block().world().equals(event.getWorld().getUID())
                     && intent.block().x() >> 4 == event.getChunk().getX()
                     && intent.block().z() >> 4 == event.getChunk().getZ()) {
@@ -510,7 +507,7 @@ public final class DrawerUpgradeService implements Listener {
             }
         }
         for (final UpgradeIntentStore.BlockKey missing : expected) {
-            context.logger().severe("Committed paid drawer upgrade at " + missing
+            context.logger().severe("Paid drawer upgrade at " + missing
                     + " has no tagged barrel in its loaded chunk; inspect the economy and world before resolving");
         }
     }

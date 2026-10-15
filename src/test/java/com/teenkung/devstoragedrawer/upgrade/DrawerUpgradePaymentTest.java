@@ -19,7 +19,7 @@ final class DrawerUpgradePaymentTest {
     @TempDir Path temp;
 
     @Test
-    void confirmedPaymentRemainsCommittedUntilExplicitVerification() throws IOException {
+    void confirmedPaymentIsVerifiedAndCompactedAutomatically() throws IOException {
         final FakeEconomy economy = new FakeEconomy();
         final UpgradeIntentStore store = new UpgradeIntentStore(temp);
         final UpgradeIntentStore.Intent intent = intent(125D);
@@ -29,13 +29,14 @@ final class DrawerUpgradePaymentTest {
         assertEquals(0D, economy.deposited);
         final UpgradeIntentStore reloaded = new UpgradeIntentStore(temp);
         reloaded.load();
-        assertEquals(UpgradeIntentStore.Status.COMMITTED, reloaded.find(intent.id()).orElseThrow().status());
-        assertEquals(intent.id(), reloaded.pendingAt(BLOCK).orElseThrow().id());
-        assertTrue(reloaded.hasUnresolved(BLOCK));
+        assertTrue(reloaded.find(intent.id()).isEmpty());
+        assertTrue(reloaded.pendingAt(BLOCK).isEmpty());
+        assertFalse(reloaded.hasUnresolved(BLOCK));
+        assertFalse(Files.exists(temp.resolve(intent.id() + ".dat")));
     }
 
     @Test
-    void committedPaymentBlocksTheNextUpgradeUntilVerified() throws IOException {
+    void confirmedPaymentDoesNotBlockTheNextUpgrade() {
         final FakeEconomy economy = new FakeEconomy();
         final UpgradeIntentStore store = new UpgradeIntentStore(temp);
         final UpgradeIntentStore.Intent first = intent(125D);
@@ -43,18 +44,41 @@ final class DrawerUpgradePaymentTest {
 
         assertEquals(DrawerUpgradePayment.Result.SUCCESS,
                 DrawerUpgradePayment.execute(economy, store, first, () -> true));
-        assertEquals(DrawerUpgradePayment.Result.LEDGER_UNAVAILABLE,
-                DrawerUpgradePayment.execute(economy, store, second, () -> true));
-        assertEquals(125D, economy.withdrawn);
-        assertEquals(UpgradeIntentStore.Status.COMMITTED, store.find(first.id()).orElseThrow().status());
-
-        store.transition(first.id(), UpgradeIntentStore.Status.VERIFIED);
         assertEquals(DrawerUpgradePayment.Result.SUCCESS,
                 DrawerUpgradePayment.execute(economy, store, second, () -> true));
 
         assertEquals(375D, economy.withdrawn);
         assertTrue(store.find(first.id()).isEmpty());
-        assertEquals(UpgradeIntentStore.Status.COMMITTED, store.find(second.id()).orElseThrow().status());
+        assertTrue(store.find(second.id()).isEmpty());
+        assertFalse(store.hasUnresolved(BLOCK));
+    }
+
+    @Test
+    void matchingLoadedBarrelCanCompactALegacyCommittedPayment() throws IOException {
+        final UpgradeIntentStore store = new UpgradeIntentStore(temp);
+        final UpgradeIntentStore.Intent intent = intent(125D);
+        store.prepare(intent);
+        store.transition(intent.id(), UpgradeIntentStore.Status.CHARGED);
+        store.transition(intent.id(), UpgradeIntentStore.Status.COMMITTED);
+
+        assertTrue(store.verifyApplied(intent.id()));
+        assertFalse(store.hasUnresolved(BLOCK));
+        assertTrue(store.find(intent.id()).isEmpty());
+        assertFalse(Files.exists(temp.resolve(intent.id() + ".dat")));
+        assertFalse(store.verifyApplied(intent.id()));
+    }
+
+    @Test
+    void matchingLoadedBarrelCanCompactAChargedPayment() throws IOException {
+        final UpgradeIntentStore store = new UpgradeIntentStore(temp);
+        final UpgradeIntentStore.Intent intent = intent(125D);
+        store.prepare(intent);
+        store.transition(intent.id(), UpgradeIntentStore.Status.CHARGED);
+
+        assertTrue(store.verifyApplied(intent.id()));
+        assertFalse(store.hasUnresolved(BLOCK));
+        assertTrue(store.find(intent.id()).isEmpty());
+        assertFalse(Files.exists(temp.resolve(intent.id() + ".dat")));
     }
 
     @Test
@@ -83,7 +107,8 @@ final class DrawerUpgradePaymentTest {
         assertEquals(0D, economy.deposited);
         final UpgradeIntentStore reloaded = new UpgradeIntentStore(temp);
         reloaded.load();
-        assertEquals(UpgradeIntentStore.Status.ATTEMPTED, reloaded.find(intent.id()).orElseThrow().status());
+        assertEquals(UpgradeIntentStore.Status.PAYMENT_UNKNOWN,
+                reloaded.find(intent.id()).orElseThrow().status());
         assertTrue(reloaded.pendingAt(BLOCK).isPresent());
     }
 
@@ -190,7 +215,7 @@ final class DrawerUpgradePaymentTest {
 
     private static UpgradeIntentStore.Intent intent(final double cost) {
         return new UpgradeIntentStore.Intent(UUID.randomUUID(), PLAYER, BLOCK, "tier_1", "tier_2",
-                cost, System.currentTimeMillis(), UpgradeIntentStore.Status.ATTEMPTED);
+                cost, System.currentTimeMillis(), UpgradeIntentStore.Status.PAYMENT_UNKNOWN);
     }
 
     private static final class FakeEconomy implements DrawerEconomy {

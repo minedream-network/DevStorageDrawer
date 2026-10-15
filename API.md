@@ -66,6 +66,9 @@ api.deposit(drawer, offeredStack, offeredStack.getAmount(), context)
 `DrawerTransferResult.withdrawnItems()`. The drawer debit is journaled and durable
 before the future completes. Two plugins cannot share an atomic database commit,
 so a caller that cannot consume withdrawn items must compensate with a deposit.
+One call may return at most `DevStorageDrawerApi.MAX_WITHDRAWAL_RESULT_STACKS`
+native-sized stacks. An oversized request returns `INVALID_REQUEST` before the
+drawer is debited; split larger transfers into bounded calls.
 Use `DrawerTransferStatus` rather than inferring a result from a count: it
 distinguishes full, empty, mismatched, recovering, corrupt, scheduler-unavailable,
 and persistence-failure outcomes.
@@ -98,7 +101,7 @@ binary compatibility but is deprecated because it requires manual Folia ownershi
 
 ## Logical stock sales
 
-`DrawerSaleApi` (version `1.0.0`) is a separate optional service for sale tools that already handle a
+`DrawerSaleApi` (version `1.1.0`) is a separate optional service for sale tools that already handle a
 `PlayerInteractEvent` on the clicked block's owning region. Its methods are
 **synchronous and region-confined**, unlike `DevStorageDrawerApi`. Resolve it through
 `ServicesManager` only when DevStorageDrawer is enabled, and declare `softdepend`.
@@ -121,7 +124,9 @@ and a `long` count. Return `PAID`, `REJECTED` (definitely no payment), or `UNKNO
 Drawer restores a rejected sale before returning, so compensation cannot race a
 later hopper fill. Do not schedule payment asynchronously, create lists of stacks,
 or price the barrel's proxy inventory. The API is for trusted integrations; only
-the probe checks player permission, facing and configured withdrawal protection.
+the probe captures the original actor and clicked face, and the commit rechecks
+that actor's online/region ownership, permission, face and configured withdrawal
+protection immediately before it reads or debits stock.
 
 If payment throws, returns `UNKNOWN`, or final persistence cannot be confirmed,
 the result is `RECONCILIATION_REQUIRED`. The `GUARDED_EXTERNAL_SALE` journal retains

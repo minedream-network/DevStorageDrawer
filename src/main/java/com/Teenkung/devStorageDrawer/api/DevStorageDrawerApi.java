@@ -17,7 +17,7 @@ public interface DevStorageDrawerApi {
     int MAX_WITHDRAWAL_RESULT_STACKS = 256;
 
     /** Semantic version of this public API contract. */
-    String VERSION = "1.0.0";
+    String VERSION = "1.1.0";
 
     /** Returns the semantic version implemented by this service instance. */
     default String apiVersion() {

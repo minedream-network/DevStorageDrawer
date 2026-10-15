@@ -18,6 +18,7 @@ class DrawerInteractionConfigurationTest {
             final var configuration = YamlConfiguration.loadConfiguration(reader);
 
             assertFalse(DrawerConfigurationService.parseInteraction(configuration).shortcutWithdrawalsEnabled());
+            assertFalse(DrawerConfigurationService.parseInteraction(configuration).shortcutDepositsEnabled());
             assertTrue(configuration.getBoolean("automation.enabled"));
         } catch (final java.io.IOException exception) {
             throw new AssertionError(exception);
@@ -29,8 +30,11 @@ class DrawerInteractionConfigurationTest {
         final var configuration = new YamlConfiguration();
         configuration.set("interaction.bulk-deposit-window-ticks", 10);
         assertFalse(DrawerConfigurationService.parseInteraction(configuration).shortcutWithdrawalsEnabled());
+        assertFalse(DrawerConfigurationService.parseInteraction(configuration).shortcutDepositsEnabled());
 
         configuration.set("interaction.shortcut-withdrawals-enabled", true);
+        configuration.set("interaction.shortcut-deposits-enabled", true);
         assertTrue(DrawerConfigurationService.parseInteraction(configuration).shortcutWithdrawalsEnabled());
+        assertTrue(DrawerConfigurationService.parseInteraction(configuration).shortcutDepositsEnabled());
     }
 }

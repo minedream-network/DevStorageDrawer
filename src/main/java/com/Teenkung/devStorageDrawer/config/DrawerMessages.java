@@ -1,5 +1,6 @@
 package com.teenkung.devstoragedrawer.config;
 
+import com.teenkung.devstoragedrawer.text.DrawerTextFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -40,7 +41,7 @@ public final class DrawerMessages {
         for (final Map.Entry<String, ?> entry : placeholders.entrySet()) {
             final String token = "{" + entry.getKey() + "}";
             if (!raw.contains(token)) continue;
-            raw = raw.replace(token, miniMessage.serialize(Component.text(String.valueOf(entry.getValue()))));
+            raw = raw.replace(token, miniMessage.serialize(Component.text(DrawerTextFormat.value(entry.getValue()))));
         }
         return miniMessage.deserialize(raw)
                 .decorationIfAbsent(TextDecoration.ITALIC, TextDecoration.State.FALSE);
@@ -53,7 +54,7 @@ public final class DrawerMessages {
             final String token = "<" + entry.getKey() + ">";
             if (!raw.contains(token)) continue;
             raw = raw.replace(token, miniMessage.serialize(
-                    Component.text(String.valueOf(entry.getValue()))
+                    Component.text(DrawerTextFormat.value(entry.getValue()))
             ));
         }
         return miniMessage.deserialize(raw)

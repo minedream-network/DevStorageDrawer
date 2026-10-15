@@ -12,11 +12,11 @@ public record DrawerSettings(
         Bedrock bedrock,
         Automation automation,
         Redstone redstone,
-        Parcels parcels,
         Breaking breaking,
         StorageMenu storageMenu,
         Upgrade upgrade,
-        DrawerUpgradeMenu upgradeMenu
+        DrawerUpgradeMenu upgradeMenu,
+        DrawerDestroyMenu destroyMenu
 ) {
     public DrawerSettings {
         tiers = Map.copyOf(Objects.requireNonNull(tiers, "tiers"));
@@ -28,11 +28,11 @@ public record DrawerSettings(
         Objects.requireNonNull(bedrock, "bedrock");
         Objects.requireNonNull(automation, "automation");
         Objects.requireNonNull(redstone, "redstone");
-        Objects.requireNonNull(parcels, "parcels");
         Objects.requireNonNull(breaking, "breaking");
         Objects.requireNonNull(storageMenu, "storageMenu");
         Objects.requireNonNull(upgrade, "upgrade");
         Objects.requireNonNull(upgradeMenu, "upgradeMenu");
+        Objects.requireNonNull(destroyMenu, "destroyMenu");
         if (redstone.logicalComparatorOutput()) {
             if (!automation.enabled() || automation.outputProxySlots() != 26) {
                 throw new IllegalArgumentException(
@@ -48,26 +48,6 @@ public record DrawerSettings(
                 }
             }
         }
-    }
-
-    public DrawerSettings(final Map<String, DrawerTierDefinition> tiers, final Interaction interaction,
-            final Visuals visuals, final Bedrock bedrock, final Automation automation,
-            final Redstone redstone, final Parcels parcels) {
-        this(tiers, interaction, visuals, bedrock, automation, redstone, parcels, new Breaking(16));
-    }
-
-    public DrawerSettings(final Map<String, DrawerTierDefinition> tiers, final Interaction interaction,
-            final Visuals visuals, final Bedrock bedrock, final Automation automation,
-            final Redstone redstone, final Parcels parcels, final Breaking breaking) {
-        this(tiers, interaction, visuals, bedrock, automation, redstone, parcels, breaking, new StorageMenu(4));
-    }
-
-    public DrawerSettings(final Map<String, DrawerTierDefinition> tiers, final Interaction interaction,
-            final Visuals visuals, final Bedrock bedrock, final Automation automation,
-            final Redstone redstone, final Parcels parcels, final Breaking breaking,
-            final StorageMenu storageMenu) {
-        this(tiers, interaction, visuals, bedrock, automation, redstone, parcels, breaking, storageMenu,
-                new Upgrade(false, 45, 8D), DrawerUpgradeMenu.defaults());
     }
 
     public record Upgrade(boolean enabled, int sessionSeconds, double maximumDistance) {
@@ -107,13 +87,14 @@ public record DrawerSettings(
     public record Breaking(int stacksPerTick) {
         public Breaking {
             if (stacksPerTick < 1 || stacksPerTick > 128) {
-                throw new IllegalArgumentException("breaking.stacks-per-tick must be between 1 and 128");
+                throw new IllegalArgumentException("destroy.stacks-per-tick must be between 1 and 128");
             }
         }
     }
 
     public record Interaction(
             boolean shortcutWithdrawalsEnabled,
+            boolean shortcutDepositsEnabled,
             int bulkDepositWindowTicks,
             boolean requireFacingFace
     ) {
@@ -123,9 +104,15 @@ public record DrawerSettings(
             }
         }
 
+        /** Source-compatible default for callers compiled before the deposit shortcut switch existed. */
+        public Interaction(final boolean shortcutWithdrawalsEnabled, final int bulkDepositWindowTicks,
+                final boolean requireFacingFace) {
+            this(shortcutWithdrawalsEnabled, true, bulkDepositWindowTicks, requireFacingFace);
+        }
+
         /** Source-compatible default for callers compiled before the shortcut switch existed. */
         public Interaction(final int bulkDepositWindowTicks, final boolean requireFacingFace) {
-            this(true, bulkDepositWindowTicks, requireFacingFace);
+            this(true, true, bulkDepositWindowTicks, requireFacingFace);
         }
     }
 
@@ -219,9 +206,4 @@ public record DrawerSettings(
         }
     }
 
-    public record Parcels(
-            boolean enabled,
-            boolean dropOnBreak
-    ) {
-    }
 }

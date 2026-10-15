@@ -15,10 +15,11 @@ Builds use the included Gradle wrapper and target the Paper API as a compile-onl
 
 - Configurable drawer tiers and capacity based on the stored item's native stack size
 - Drawer items use a configurable enchantment glint without adding a real enchantment
-- Global `interaction.shortcut-withdrawals-enabled` switch for disabling quick item
-  extraction outside the GUI while retaining the full storage and upgrade menus
+- Independent `interaction.shortcut-withdrawals-enabled` and
+  `interaction.shortcut-deposits-enabled` switches for disabling outside-GUI shortcuts
+  while retaining the full storage and upgrade menus
 - Single-item storage with deposits, withdrawals, shift interactions, and inventory-aware transfers
-- Paged large-chest storage: right-click any face of the drawer to browse all logical stock, with 45 item slots and a navigation row. Cursor pickup, splitting, shift transfers, drag, hotbar/offhand swaps, double-click collection and slot drops transfer real items; sneak-right-click keeps the quick-deposit shortcut
+- Paged large-chest storage: right-click any face of the drawer to browse all logical stock, with 45 item slots and a navigation row. Cursor pickup, splitting, shift transfers, drag, hotbar/offhand swaps, double-click collection and slot drops transfer real items; sneak-right-click with an item uses quick deposit while an empty hand opens Upgrade directly
 - The menu shows all logical stock while the barrel mirror serves hoppers. It accepts one item identity per drawer, respects logical capacity, and blocks transfers while a recovery/sale/break journal is pending
 - Menu navigation icons accept vanilla materials and UniItems custom item keys from installed item providers
 - In-place paid tier upgrades from the anvil control: Java dialogs and Bedrock forms share the configurable `redstone-upgrader`-style two-step details/confirmation flow. State, permissions, protection, route and price are rechecked before one economy withdrawal
@@ -28,13 +29,13 @@ Builds use the included Gradle wrapper and target the Paper API as a compile-onl
 - Java ItemDisplay/TextDisplay rendering and two-line holograms above drawers, visible only to Floodgate players
 - Filled drawers drop their contents as normal items in native-sized stacks, including in Creative mode
 - Destruction confirmation dialog: confirm once to break the drawer immediately; contents drop first, followed by the drawer block. Confirmation rechecks reach, the owning region, drawer/item identity and the normal block-break protection event. Hopper quantity changes keep the confirmation valid; guarded drops debit the latest stock and block further transfers until completion
-- Large breaks drop at most `breaking.stacks-per-tick` stacks per tick (default 16). The barrel retains undelivered stock and pauses transfers until breaking completes. If dropping stops, completed batches remain dropped and the remaining items stay in the barrel
+- Large breaks drop at most `destroy.stacks-per-tick` stacks per tick (default 16). The barrel retains undelivered stock and pauses transfers until breaking completes. If dropping stops, completed batches remain dropped and the remaining items stay in the barrel
 - Persistent state recovery, repair, explicit capacity migration, and journaled transactions
 - Folia-aware scheduling and a public API for integrations
 
 Multi-item storage, crafting recipes, locking, voiding, controllers, remotes, and personal security are outside the current v1 scope.
 
-Storage pages use a single open 54-slot window. Normal cursor placement, pickup, splitting, hotbar swaps, shift transfers and dragging run through vanilla container movement. Items remain in the slots where the player put them, and existing hidden stock does not immediately refill a slot the player emptied. A full visible page behaves like a full chest; use the next page or sneak-right-click quick deposit to store more. The arrows change pages; shift-clicking them jumps to the first or last page. The centre indicator shows the current page, total stock and capacity. A completely filled last page provides an empty next page for deposits if logical capacity remains. Views refresh every `storage-menu.refresh-ticks` ticks (default 4) and write only changed slots. Changing pages rebuilds that page from the latest total. No full logical inventory is allocated in memory.
+Storage pages use a single open 54-slot window. Normal cursor placement, pickup, splitting, hotbar swaps, shift transfers and dragging run through vanilla container movement. Items remain in the slots where the player put them, and existing hidden stock does not immediately refill a slot the player emptied. A full visible page behaves like a full chest; use the next page or sneak-right-click quick deposit to store more. The arrows change pages; shift-clicking them jumps to the first or last page. The centre indicator shows the current page, total stock and capacity. A completely filled last page provides an empty next page for deposits if logical capacity remains. Views refresh every `storage-menu.refresh-ticks` ticks in `menus.yml` (default 4) and write only changed slots. Changing pages rebuilds that page from the latest total. No full logical inventory is allocated in memory.
 
 Displayed stacks are projections. A guarded journal reserves each native move before vanilla executes it; accounting uses the actual change in item slots after the event returns, including later event cancellation and partial transfers. Rapid consecutive clicks settle the previous completed move before starting the next. Hoppers and sell integrations cannot consume the same stock while a move is unresolved. Uncertain delivery/final persistence retains the journal for reconciliation. Capacity-limited partial cursor placement and protected slot drops use explicit guarded transfers; invalid drags are cancelled without manually consuming the cursor. Closing or disabling settles completed moves and clears the projections without discarding stored stock or the player's real cursor. Stored bundles move as whole items; editing their contents inside the menu is blocked to preserve item identity.
 
@@ -48,7 +49,7 @@ Refresh uses one delayed player task, and each view coalesces rapid native moves
 
 ## Release
 
-The current release line is **1.0.1**. Release jars and their SHA-256 checksums
+The current release line is **1.1.0**. Release jars and their SHA-256 checksums
 are distributed through the [GitHub Releases page](https://github.com/Teenkung123/DevStorageDrawer/releases).
 Verify the checksum before copying a jar to a production server.
 
@@ -67,7 +68,7 @@ The `-plain.jar` build omits UniItems; install the bundled jar on the server.
 1. Build the project with the Gradle wrapper.
 2. Copy the jar from `build/libs/` into the server's `plugins/` directory.
 3. Start or restart the Paper/Folia server.
-4. Configure `plugins/DevStorageDrawer/config.yml`, `tiers.yml`, `upgrade-menu.yml`, and `messages.yml` as needed.
+4. Configure `plugins/DevStorageDrawer/config.yml`, `tiers.yml`, `menus.yml`, and `messages.yml` as needed.
 
 The plugin does not add crafting recipes. Administrators issue configured drawer tiers with `/drawers give`.
 
@@ -89,30 +90,50 @@ Third-party integrations should use the contracts under `com.teenkung.devstorage
 
 ## Configuration
 
-- `config.yml` controls general behavior, automation, rendering, Bedrock handling, and diagnostics.
-- `tiers.yml` defines the admin-issued drawer tiers and their stack capacities.
-- `upgrade-menu.yml` controls both nested Java dialogs and Bedrock forms using the same `dialogs.main-menu.dialog` / `dialogs.upgrade-confirm.dialog` shape as Core's `redstone-upgrader`.
+- `config.yml` controls global behavior, automation, rendering, and upgrade/destroy runtime settings.
+- `tiers.yml` defines drawer tiers, capacities, prices, permissions, and upgrade routes.
+- `menus.yml` contains storage-menu controls plus every Upgrade/Destroy Java dialog and Bedrock form.
 - `messages.yml` contains user-facing messages.
+
+Bedrock form titles, content, labels, and descriptions in `menus.yml` accept MiniMessage colors
+and the supported `bold`, `italic`, and `obfuscated` decorations. Hex colors are mapped to the
+nearest Bedrock palette color. Unsupported Java-only decorations are omitted, and each separately
+rendered fragment is reset so formatting does not bleed into the next button line.
 
 ### Drawer upgrades
 
 The storage menu's anvil opens the current tier and capacity view, followed by a separate payment confirmation. A successful purchase changes the placed drawer's tier and capacity snapshot without moving or recreating its stored items. Pending recovery/sale/break journals block the purchase. A paid purchase writes a durable intent before calling Vault and records the confirmed charge before saving the new tier. If the charge or barrel write is uncertain, the operation remains pending and blocks another upgrade of that drawer. The plugin does not automatically retry, refund, or clear an uncertain payment. Keep `plugins/DevStorageDrawer/upgrade-intents/` with world backups.
 
-Operators with `devstoragedrawer.admin.upgrade-reconcile` can run `/drawers upgrade pending [page]` to inspect operation IDs, status, player, location, route, and cost. Even a successfully applied paid upgrade stays `COMMITTED` and blocks a further purchase until an operator verifies the saved barrel tier; this protects against a crash between the chunk write and its disk flush. Verify both the economy transaction and the placed barrel before running `/drawers upgrade resolve <uuid> <committed|refunded|no-charge>`. `committed` may resolve an `ATTEMPTED`, `CHARGED`, or `COMMITTED` intent only after both the charge and new barrel tier have been verified; `refunded` means a possible charge was compensated; `no-charge` is accepted only for an `ATTEMPTED` intent after verifying that no debit occurred. Resolution unlocks the drawer, compacts the terminal ledger entry, and logs the administrator's decision; it does not move money or edit the barrel. Only unresolved intents count toward the 100,000-record safety limit.
+Operators with `devstoragedrawer.admin.upgrade-reconcile` can run `/drawers upgrade pending [page]` to inspect operation IDs, status, player, location, route, and cost. Normal paid upgrades are verified and compacted automatically. A loaded barrel at the exact recorded target tier also automatically resolves a `CHARGED` or legacy `COMMITTED` record. Only `PAYMENT_UNKNOWN`, or a known charge whose barrel does not prove the target tier, needs administrator review. Verify both the economy transaction and the placed barrel before running `/drawers upgrade resolve <uuid> <committed|refunded|no-charge>`. `committed` records a verified charge and applied tier; `refunded` records that a possible or confirmed charge was compensated; `no-charge` is accepted only for `PAYMENT_UNKNOWN` after verifying that no debit occurred. Resolution unlocks the drawer and compacts the terminal ledger entry; it does not move money or edit the barrel. Only unresolved intents count toward the 100,000-record safety limit.
 
-Upgrade paths normally live with their source tier:
+Global upgrade behavior lives in `config.yml`, while each tier's route and price live in `tiers.yml`:
+
+```yaml
+upgrade:
+  enabled: true
+  session-seconds: 45
+  maximum-distance: 8
+```
 
 ```yaml
 tiers:
   tier_1:
-    capacity-stacks: 32
+    # item, capacity-stacks, placement-permission...
     upgrade:
       next-tier: tier_2
       cost: 1000
       permission: ""
 ```
 
-The target must exist and have greater `capacity-stacks`. `cost` may be zero. Existing installations whose `tiers.yml` has no upgrade blocks use matching fallback routes under `config.yml` (`upgrade.routes`) for the bundled `tier_1` and `tier_2`; a tier-local route takes precedence. Run `/drawers reload` after editing the route, price, menu, or messages.
+The target must exist and have greater `capacity-stacks`. `cost` may be zero. There is no second
+route source or compatibility fallback. All Upgrade and Destroy dialog/form presentation lives in
+`menus.yml`. Run `/drawers reload` after editing behavior, routes, prices, menus, or messages.
+
+Release 1.1.0 uses `config-version: 2` once in `config.yml`; that value governs the complete
+configuration set. The other YAML files must not declare their own version. This release
+intentionally has no legacy configuration fallback. Replace or manually rewrite the old files,
+add `menus.yml`, and remove the obsolete `upgrade-menu.yml` and `destroy-menu.yml` before starting
+an existing installation.
 
 Drawers can be used from any face by default. For an existing installation, set
 `interaction.require-facing-face: false` in its `config.yml` and run `/drawers reload`.
@@ -120,8 +141,10 @@ Set it to `true` to restrict interactions to the front face again.
 
 Shortcut withdrawal is disabled by default. `interaction.shortcut-withdrawals-enabled: false`
 blocks left-click one-item withdrawal, Shift+left-click stack withdrawal, and attacking a
-drawer display. Right-click storage GUI access, GUI deposits/withdrawals, Shift+right-click
-quick deposits, paid upgrades, sell tools, breaking, and Hopper/Automation remain available.
+drawer display. Set `interaction.shortcut-deposits-enabled: false` to also block
+Shift+right-click held-stack and matching-inventory quick deposits. Shift+right-click with an
+empty hand opens Upgrade directly. Right-click storage GUI access, GUI deposits/withdrawals,
+paid upgrades, sell tools, breaking, and Hopper/Automation remain available.
 Set it to `true` and run `/drawers reload` to restore the outside-GUI withdrawal shortcuts.
 
 ### Floodgate holograms
@@ -169,7 +192,7 @@ a tier and run `/drawers reload` to disable the glint for newly created items.
 
 ### Custom menu icons
 
-Set `storage-menu.items.<control>.material` in `config.yml` to a vanilla material
+Set `storage-menu.items.<control>.material` in `menus.yml` to a vanilla material
 or a [UniItem provider key](https://github.com/ProjectUnified/UniItem/tree/2.7.1).
 Controls are `previous`, `next`, `first` (previous disabled), `last` (next disabled),
 `page`, `upgrade`, and `separator`. Their slots and click actions stay fixed.

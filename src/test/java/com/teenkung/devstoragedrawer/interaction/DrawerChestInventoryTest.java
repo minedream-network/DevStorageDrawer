@@ -264,6 +264,46 @@ class DrawerChestInventoryTest {
         }
     }
 
+    @Test void disabledShortcutDepositsDoNotConsumeOrCreditSneakingRightClick() {
+        try (Fixture f = new Fixture(1000, 64, 10000)) {
+            when(f.settings.interaction()).thenReturn(new DrawerSettings.Interaction(true, false, 10, false));
+            final ItemStack held = f.item("stone", 20, 64);
+            when(f.bottom.getItemInMainHand()).thenReturn(held);
+            when(f.player.isSneaking()).thenReturn(true);
+            final var listener = new DrawerInteractionListener(f.context, f.hoppers,
+                    mock(DrawerWithdrawalCoordinator.class), DrawerRuntime.DrawerDisplayTargetResolver.none(), f.protection);
+            final PlayerInteractEvent event = rightClick(f);
+
+            listener.onPlayerInteract(event);
+
+            assertEquals(20, held.getAmount());
+            assertEquals(1000, f.total());
+            verify(f.repository, never()).save(any(), any());
+            verify(f.player, never()).saveData();
+            verify(event, never()).setCancelled(true);
+        }
+    }
+
+    @Test void sneakingEmptyHandOpensUpgradeEvenWhenShortcutDepositsAreDisabled() {
+        try (Fixture f = new Fixture(1000, 64, 10000)) {
+            when(f.settings.interaction()).thenReturn(new DrawerSettings.Interaction(true, false, 10, false));
+            when(f.player.isSneaking()).thenReturn(true);
+            final DrawerUpgradeOpener upgrades = mock(DrawerUpgradeOpener.class);
+            final var listener = new DrawerInteractionListener(f.context, f.hoppers,
+                    mock(DrawerWithdrawalCoordinator.class), DrawerRuntime.DrawerDisplayTargetResolver.none(),
+                    f.protection, upgrades);
+            final PlayerInteractEvent event = rightClick(f);
+
+            listener.onPlayerInteract(event);
+            f.tick();
+
+            verify(upgrades).open(f.player, f.barrel);
+            verify(event).setCancelled(true);
+            verify(f.repository, never()).save(any(), any());
+            assertEquals(1000, f.total());
+        }
+    }
+
     @Test void failedQuickDepositCreditRestoresPlayerAndOriginalDrawer() {
         try (Fixture f = new Fixture(1000, 64, 10000)) {
             final ItemStack held = f.item("stone", 20, 64);
@@ -287,22 +327,34 @@ class DrawerChestInventoryTest {
         }
     }
 
-    @Test void matchingInventoryQuickDepositUsesOneJournalForAllSlots() {
+    @Test void secondMatchingQuickDepositUsesOneJournalForAllInventorySlots() {
         try (Fixture f = new Fixture(1000, 64, 10000)) {
             f.playerSlots[0] = f.item("stone", 12, 64);
             f.playerSlots[1] = f.item("stone", 17, 64);
             when(f.player.isSneaking()).thenReturn(true);
+            final ItemStack firstHeld = f.item("stone", 1, 64);
+            final ItemStack secondHeld = f.item("stone", 1, 64);
+            when(f.bottom.getItemInMainHand()).thenReturn(firstHeld, firstHeld, firstHeld, secondHeld, secondHeld);
+            when(f.barrel.getWorld()).thenReturn(f.world);
+            when(f.barrel.getX()).thenReturn(0);
+            when(f.barrel.getY()).thenReturn(64);
+            when(f.barrel.getZ()).thenReturn(0);
+            when(f.context.tier("tier")).thenReturn(Optional.of(mock(DrawerTierDefinition.class)));
             final var listener = new DrawerInteractionListener(f.context, f.hoppers,
                     mock(DrawerWithdrawalCoordinator.class), DrawerRuntime.DrawerDisplayTargetResolver.none(), f.protection);
+
+            listener.onPlayerInteract(rightClick(f));
+            assertEquals(1001, f.total());
+            clearInvocations(f.repository, f.player);
             listener.onPlayerInteract(rightClick(f));
 
             final var states = org.mockito.ArgumentCaptor.forClass(DrawerState.class);
             verify(f.repository, times(3)).save(eq(f.barrel), states.capture());
-            assertEquals(1029, f.total());
+            assertEquals(1030, f.total());
             assertEquals(DrawerJournalKind.GUARDED_PLAYER_DEPOSIT,
                     states.getAllValues().get(0).proxyJournal().orElseThrow().kind());
-            assertEquals(1000, states.getAllValues().get(0).storedTotal());
-            assertEquals(1029, states.getAllValues().get(1).storedTotal());
+            assertEquals(1001, states.getAllValues().get(0).storedTotal());
+            assertEquals(1030, states.getAllValues().get(1).storedTotal());
             assertNull(f.playerSlots[0]);
             assertNull(f.playerSlots[1]);
             verify(f.player).saveData();

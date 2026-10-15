@@ -1,5 +1,5 @@
 # DevStorageDrawer global settings. Strings in messages.yml use MiniMessage.
-config-version: 1
+config-version: 2
 
 # Opens from the anvil button in the storage menu. Economy is resolved through Vault;
 # minedream-core-smp can publish its Core economy as the Vault provider.
@@ -7,10 +7,6 @@ upgrade:
   enabled: true
   session-seconds: 45
   maximum-distance: 8
-  # Compatibility fallback for existing tiers.yml files. A tier-local upgrade section wins.
-  routes:
-    tier_1: {next-tier: tier_2, cost: 1000, permission: ""}
-    tier_2: {next-tier: tier_3, cost: 3000, permission: ""}
 
 storage-menu:
   # Large chest: 45 item slots and 9 navigation slots. Only changed slots are refreshed.
@@ -41,7 +37,12 @@ interaction:
   # The storage GUI, Shift+right-click deposits, upgrades, selling, breaking, and
   # Hopper/Automation are unaffected.
   shortcut-withdrawals-enabled: false
-  # A second matching right-click within this window deposits matching inventory stacks.
+  # Controls quick deposits outside the storage GUI. When false, Shift+right-click
+  # with an item does not deposit the held stack or matching inventory stacks.
+  # Shift+right-click with an empty hand opens the Upgrade UI instead.
+  shortcut-deposits-enabled: false
+  # When quick deposits are enabled, a second matching right-click within this window
+  # deposits matching inventory stacks.
   bulk-deposit-window-ticks: 10
   # false allows opening, deposits, withdrawals, and sell tools from any face.
   require-facing-face: false
@@ -111,13 +112,7 @@ redstone:
   protect-from-explosions: true
   prevent-piston-movement: true
 
-breaking:
+destroy:
   # Filled drawers drop real items in native stacks. The barrel remains until all batches finish.
-  # Each completed batch saves its remaining stock; hopper/player transfers pause during breaking.
+  # Each completed batch saves its remaining stock; hopper/player transfers pause during destruction.
   stacks-per-tick: 16
-
-# Retained for compatibility with existing recovery parcels. Drawer breaks use normal items.
-parcels:
-  enabled: true
-  drop-on-break: true
-  # Parcels are always owner-bound, container-blocked, and use vanilla item despawn.

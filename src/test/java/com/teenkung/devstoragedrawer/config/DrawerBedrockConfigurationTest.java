@@ -29,7 +29,7 @@ class DrawerBedrockConfigurationTest {
         yaml.set("automation.hopper-transfer-amount", 1);
         overrides.forEach(yaml::set);
         when(plugin.getConfig()).thenReturn(yaml);
-        for (final String file : new String[] {"tiers.yml", "messages.yml"}) {
+        for (final String file : new String[] {"tiers.yml", "menus.yml", "messages.yml"}) {
             try (final var resource = getClass().getResourceAsStream("/" + file)) {
                 Files.copy(resource, directory.resolve(file));
             }

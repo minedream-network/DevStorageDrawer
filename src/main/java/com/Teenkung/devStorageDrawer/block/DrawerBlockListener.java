@@ -1,6 +1,8 @@
 package com.teenkung.devstoragedrawer.block;
 
 import com.teenkung.devstoragedrawer.api.DrawerChangeCause;
+import com.teenkung.devstoragedrawer.config.DrawerDialogTypeFactory;
+import com.teenkung.devstoragedrawer.config.DrawerDestroyMenu;
 import com.teenkung.devstoragedrawer.config.DrawerTierDefinition;
 import com.teenkung.devstoragedrawer.domain.DrawerInvariantViolationException;
 import com.teenkung.devstoragedrawer.domain.DrawerJournalKind;
@@ -13,11 +15,11 @@ import io.papermc.paper.registry.data.dialog.ActionButton;
 import io.papermc.paper.registry.data.dialog.DialogBase;
 import io.papermc.paper.registry.data.dialog.action.DialogAction;
 import io.papermc.paper.registry.data.dialog.body.DialogBody;
-import io.papermc.paper.registry.data.dialog.type.DialogType;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -200,44 +202,103 @@ public final class DrawerBlockListener implements Listener {
                 return;
             }
             try {
-                final ClickCallback.Options clickOptions = ClickCallback.Options.builder()
-                        .uses(1).lifetime(Duration.ofSeconds(60)).build();
-                final ActionButton confirm = ActionButton.builder(
-                        this.context.messages().dialogComponent("drawer.break-confirm")
-                ).action(DialogAction.customClick((response, audience) -> {
-                    if (!(audience instanceof Player clicked) || !clicked.getUniqueId().equals(playerId)) {
-                        return;
-                    }
-                    this.context.execution().runOnEntity(clicked, task -> confirmBreak(clicked, ticket),
-                            () -> this.pendingBreaks.remove(playerId, ticket));
-                }, clickOptions)).build();
-                final ActionButton cancel = ActionButton.builder(
-                        this.context.messages().dialogComponent("drawer.break-cancel")
-                ).action(DialogAction.customClick((response, audience) -> {
-                    if (!(audience instanceof Player clicked) || !clicked.getUniqueId().equals(playerId)) {
-                        return;
-                    }
-                    this.pendingBreaks.remove(playerId, ticket);
-                }, clickOptions)).build();
-                final String warningKey = total > 0L ? "drawer.break-warning" : "drawer.break-warning-empty";
-                final Dialog dialog = Dialog.create(factory -> factory.empty()
-                        .base(DialogBase.builder(this.context.messages().dialogComponent("drawer.break-title"))
-                                .body(List.of(DialogBody.plainMessage(
-                                        this.context.messages().dialogComponent(warningKey, Map.of("amount", total))
-                                )))
-                                .canCloseWithEscape(true)
-                                .afterAction(DialogBase.DialogAfterAction.CLOSE)
-                                .build())
-                        .type(DialogType.confirmation(confirm, cancel)));
-                player.showDialog(dialog);
+                final Map<String, Object> values = Map.of(
+                        "amount", total,
+                        "world", player.getWorld().getName(),
+                        "x", key.x(),
+                        "y", key.y(),
+                        "z", key.z()
+                );
+                final DrawerDestroyMenu menu = this.context.settings().destroyMenu();
+                final boolean bedrock = menu.bedrock().enabled()
+                        && this.context.plugin().getServer().getPluginManager().isPluginEnabled("floodgate")
+                        && DrawerDestroyBedrock.isPlayer(player);
+                final boolean opened;
+                if (bedrock) {
+                    opened = DrawerDestroyBedrock.show(player, this.context.messages(), menu, values,
+                            action -> this.context.execution().runOnEntity(player,
+                                    task -> respondToDestroy(player, ticket, action),
+                                    () -> this.pendingBreaks.remove(playerId, ticket)));
+                } else {
+                    showJavaDestroyDialog(player, ticket, menu, values, total == 0L);
+                    opened = true;
+                }
+                if (!opened) throw new IllegalStateException("the configured form could not be sent");
                 ticket.markDialogShown();
-            } catch (final RuntimeException exception) {
+            } catch (final RuntimeException | LinkageError exception) {
                 this.pendingBreaks.remove(playerId, ticket);
                 player.sendMessage(this.context.messages().component("drawer.break-unavailable"));
                 this.context.logger().warning("Could not show drawer break dialog to " + player.getName()
                         + ": " + exception.getMessage());
             }
         }, () -> this.pendingBreaks.remove(playerId, ticket));
+    }
+
+    private void showJavaDestroyDialog(final Player player, final DrawerBreakTicket ticket,
+            final DrawerDestroyMenu menu, final Map<String, Object> values, final boolean empty) {
+        final DrawerDestroyMenu.Dialog configured = menu.confirmation();
+        final List<ActionButton> actions = configured.visibleButtons().stream()
+                .map(button -> destroyActionButton(player, ticket, button, menu, values, empty))
+                .toList();
+        final ActionButton exit = configured.exitButton().enabled()
+                ? destroyActionButton(player, ticket, configured.exitButton(), menu, values, empty) : null;
+        final List<? extends DialogBody> bodies = configured.body().stream()
+                .map(body -> DialogBody.plainMessage(
+                        renderDestroy(menu, body.text(), values, empty), body.width()))
+                .toList();
+        final DialogBase.Builder base = DialogBase.builder(renderDestroy(menu, configured.title(), values, empty))
+                .body(bodies)
+                .canCloseWithEscape(configured.canCloseWithEscape())
+                .pause(configured.pause())
+                .afterAction(afterAction(configured.afterAction()));
+        if (!configured.externalTitle().isBlank()) {
+            base.externalTitle(renderDestroy(menu, configured.externalTitle(), values, empty));
+        }
+        final Dialog dialog = Dialog.create(factory -> factory.empty().base(base.build())
+                .type(DrawerDialogTypeFactory.actionsOrNotice(actions, exit, configured.columns())));
+        player.showDialog(dialog);
+    }
+
+    private ActionButton destroyActionButton(final Player player, final DrawerBreakTicket ticket,
+            final DrawerDestroyMenu.Button configured, final DrawerDestroyMenu menu,
+            final Map<String, Object> values, final boolean empty) {
+        final ClickCallback.Options clickOptions = ClickCallback.Options.builder()
+                .uses(1).lifetime(Duration.ofSeconds(60)).build();
+        final ActionButton.Builder builder = ActionButton.builder(
+                        renderDestroy(menu, configured.label(), values, empty))
+                .width(configured.width())
+                .action(DialogAction.customClick((response, audience) -> {
+                    if (!(audience instanceof Player clicked)
+                            || !clicked.getUniqueId().equals(player.getUniqueId())) return;
+                    this.context.execution().runOnEntity(clicked,
+                            task -> respondToDestroy(clicked, ticket, configured.action()),
+                            () -> this.pendingBreaks.remove(clicked.getUniqueId(), ticket));
+                }, clickOptions));
+        if (!configured.tooltip().isBlank()) {
+            builder.tooltip(renderDestroy(menu, configured.tooltip(), values, empty));
+        }
+        return builder.build();
+    }
+
+    private net.kyori.adventure.text.Component renderDestroy(final DrawerDestroyMenu menu,
+            final String raw, final Map<String, Object> values, final boolean empty) {
+        return this.context.messages().rawComponent(menu.expand(raw, empty), values);
+    }
+
+    private void respondToDestroy(final Player player, final DrawerBreakTicket ticket, final String action) {
+        if (action.equals("confirm")) {
+            confirmBreak(player, ticket);
+        } else {
+            this.pendingBreaks.remove(player.getUniqueId(), ticket);
+        }
+    }
+
+    private static DialogBase.DialogAfterAction afterAction(final String configured) {
+        return switch (configured.trim().toLowerCase(Locale.ROOT).replace('_', '-')) {
+            case "none" -> DialogBase.DialogAfterAction.NONE;
+            case "wait", "wait-for-response" -> DialogBase.DialogAfterAction.WAIT_FOR_RESPONSE;
+            default -> DialogBase.DialogAfterAction.CLOSE;
+        };
     }
 
     /** Called after the dialog closes, on the player's entity thread. */

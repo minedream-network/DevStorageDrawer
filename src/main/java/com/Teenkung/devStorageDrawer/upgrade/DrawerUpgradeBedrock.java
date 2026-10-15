@@ -2,11 +2,11 @@ package com.teenkung.devstoragedrawer.upgrade;
 
 import com.teenkung.devstoragedrawer.config.DrawerMessages;
 import com.teenkung.devstoragedrawer.config.DrawerUpgradeMenu;
+import com.teenkung.devstoragedrawer.text.DrawerBedrockText;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.entity.Player;
 import org.geysermc.cumulus.form.SimpleForm;
 import org.geysermc.cumulus.util.FormImage;
@@ -14,8 +14,6 @@ import org.geysermc.floodgate.api.FloodgateApi;
 
 /** Optional Floodgate/Cumulus presentation isolated from the Java-dialog implementation. */
 final class DrawerUpgradeBedrock {
-    private static final PlainTextComponentSerializer PLAIN = PlainTextComponentSerializer.plainText();
-
     static boolean isPlayer(final Player player) {
         try {
             final FloodgateApi api = FloodgateApi.getInstance();
@@ -31,8 +29,8 @@ final class DrawerUpgradeBedrock {
         try {
             final DrawerUpgradeMenu.BedrockPage page = confirmation
                     ? menu.bedrock().confirmation() : menu.bedrock().main();
-            final String title = plain(messages, expand(menu, page.title(), values, maximum), values);
-            final String content = plain(messages, expand(menu, page.content(), values, maximum), values);
+            final String title = bedrockText(messages, expand(menu, page.title(), values, maximum), values);
+            final String content = bedrockText(messages, expand(menu, page.content(), values, maximum), values);
             final SimpleForm.Builder form = SimpleForm.builder().title(title).content(content);
             final List<String> actions = new ArrayList<>();
             if (confirmation) {
@@ -56,8 +54,8 @@ final class DrawerUpgradeBedrock {
     private static void add(final SimpleForm.Builder form, final DrawerUpgradeMenu.BedrockButton button,
             final DrawerMessages messages, final DrawerUpgradeMenu menu, final Map<String, Object> values,
             final boolean maximum) {
-        final String label = plain(messages, expand(menu, button.label(), values, maximum), values);
-        final String description = plain(messages, expand(menu, button.description(), values, maximum), values);
+        final String label = bedrockText(messages, expand(menu, button.label(), values, maximum), values);
+        final String description = bedrockText(messages, expand(menu, button.description(), values, maximum), values);
         final String text = description.isBlank() ? label : label + "\n" + description;
         if (button.imageValue().isBlank()) form.button(text);
         else form.button(text, button.imageType().equals("url") ? FormImage.Type.URL : FormImage.Type.PATH,
@@ -71,8 +69,10 @@ final class DrawerUpgradeBedrock {
                 .replace("{upgrade_preview}", maximum ? menu.maximumLabel() : menu.upgradePreview());
     }
 
-    private static String plain(final DrawerMessages messages, final String raw, final Map<String, Object> values) {
-        return PLAIN.serialize(messages.rawComponent(raw, values));
+    private static String bedrockText(final DrawerMessages messages, final String raw,
+            final Map<String, Object> values) {
+        return DrawerBedrockText.serialize(messages.rawComponent(
+                DrawerBedrockText.sanitizeMiniMessage(raw), values));
     }
 
     private DrawerUpgradeBedrock() { }

@@ -1,5 +1,6 @@
 package com.teenkung.devstoragedrawer.parcel;
 
+import com.teenkung.devstoragedrawer.text.DrawerTextFormat;
 import com.teenkung.devstoragedrawer.domain.DrawerItemIdentity;
 import java.util.List;
 import java.util.Map;
@@ -208,7 +209,7 @@ public final class DrawerParcelService {
                 ? template.displayName()
                 : Component.translatable(template);
         return itemName
-                .append(Component.text(" ×" + count, NamedTextColor.GOLD))
+                .append(Component.text(" ×" + DrawerTextFormat.number(count), NamedTextColor.GOLD))
                 .decorationIfAbsent(TextDecoration.ITALIC, TextDecoration.State.FALSE);
     }
 

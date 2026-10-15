@@ -1,5 +1,6 @@
 package com.teenkung.devstoragedrawer.block;
 
+import com.teenkung.devstoragedrawer.text.DrawerTextFormat;
 import com.teenkung.devstoragedrawer.bedrock.BedrockPlayerDetector;
 import com.teenkung.devstoragedrawer.config.DrawerTierDefinition;
 import com.teenkung.devstoragedrawer.display.DrawerVisualRenderer;
@@ -596,7 +597,8 @@ public final class DevStorageDrawerAcceptance {
         require(interactionProbe.accepted(), "A player-style transaction was rejected after hopper input");
         final Entity countedAmountEntity = countedDrawer.getWorld().getEntity(countedState.displayLink().javaAmountTextDisplayId());
         require(countedAmountEntity instanceof TextDisplay countedAmount
-                        && Component.text("10 / " + countedState.capacitySnapshot()).equals(countedAmount.text()),
+                        && Component.text("10 / " + DrawerTextFormat.number(countedState.capacitySnapshot()))
+                                .equals(countedAmount.text()),
                 "Hopper input did not update the visible drawer amount");
 
         final DrawerTier tier = firstTier();

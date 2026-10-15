@@ -55,6 +55,7 @@ public final class DrawerInteractionListener implements Listener {
     private final DrawerWithdrawalCoordinator withdrawals;
     private final DrawerRuntime.DrawerDisplayTargetResolver displayTargetResolver;
     private final DrawerWithdrawalProtection withdrawalProtection;
+    private final DrawerUpgradeOpener upgradeOpener;
     private final DrawerChestInventory chestInventory;
     private final Map<UUID, BulkDepositArm> bulkDepositArms = new ConcurrentHashMap<>();
     private final Map<UUID, PendingBlockWithdrawal> pendingBlockWithdrawals = new ConcurrentHashMap<>();
@@ -82,7 +83,8 @@ public final class DrawerInteractionListener implements Listener {
         this.withdrawals = Objects.requireNonNull(withdrawals, "withdrawals");
         this.displayTargetResolver = Objects.requireNonNull(displayTargetResolver, "displayTargetResolver");
         this.withdrawalProtection = Objects.requireNonNull(withdrawalProtection, "withdrawalProtection");
-        this.chestInventory = new DrawerChestInventory(context, hoppers, withdrawalProtection, upgradeOpener);
+        this.upgradeOpener = Objects.requireNonNull(upgradeOpener, "upgradeOpener");
+        this.chestInventory = new DrawerChestInventory(context, hoppers, withdrawalProtection, this.upgradeOpener);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -134,6 +136,12 @@ public final class DrawerInteractionListener implements Listener {
             deny(event, "drawer.interaction-face-only");
             return;
         }
+        if (event.getPlayer().isSneaking()
+                && isUsableItem(heldItem(event.getPlayer(), event.getHand()))
+                && !shortcutDepositsEnabled()) {
+            this.bulkDepositArms.remove(event.getPlayer().getUniqueId());
+            return;
+        }
         deny(event, null);
         rightClick(event.getPlayer(), barrel, event.getHand());
     }
@@ -150,6 +158,12 @@ public final class DrawerInteractionListener implements Listener {
         }
         if (!canUse(event.getPlayer())) {
             message(event.getPlayer(), "general.no-permission");
+            return;
+        }
+        if (event.getPlayer().isSneaking()
+                && isUsableItem(heldItem(event.getPlayer(), event.getHand()))
+                && !shortcutDepositsEnabled()) {
+            this.bulkDepositArms.remove(event.getPlayer().getUniqueId());
             return;
         }
         rightClick(event.getPlayer(), barrel, event.getHand());
@@ -247,6 +261,10 @@ public final class DrawerInteractionListener implements Listener {
 
     private void rightClick(final Player player, final Barrel barrel, final EquipmentSlot hand) {
         final ItemStack held = heldItem(player, hand);
+        if (player.isSneaking() && isUsableItem(held) && !shortcutDepositsEnabled()) {
+            this.bulkDepositArms.remove(player.getUniqueId());
+            return;
+        }
         final ReadyDrawer ready = readyDrawer(barrel);
         if (ready == null) {
             if (!withdrawals.isWithdrawalInProgress(barrel)) {
@@ -259,6 +277,12 @@ public final class DrawerInteractionListener implements Listener {
         final DrawerBlockAccess.PhysicalStock stock = ready.stock();
         if (!player.isSneaking()) {
             this.context.execution().runOnEntity(player, task -> openMenu(player, ready), () -> { });
+            return;
+        }
+        if (!isUsableItem(held)) {
+            this.bulkDepositArms.remove(player.getUniqueId());
+            this.context.execution().runOnEntity(player,
+                    task -> this.upgradeOpener.open(player, readyBarrel), () -> { });
             return;
         }
         try {
@@ -595,6 +619,10 @@ public final class DrawerInteractionListener implements Listener {
 
     private boolean shortcutWithdrawalsEnabled() {
         return this.context.settings().interaction().shortcutWithdrawalsEnabled();
+    }
+
+    private boolean shortcutDepositsEnabled() {
+        return this.context.settings().interaction().shortcutDepositsEnabled();
     }
 
     private boolean canWithdrawWith(final Barrel barrel, final ItemStack held) {
